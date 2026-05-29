@@ -9,6 +9,8 @@ class RobotController:
         self.queue_channels = QueueChannels
         self.sharedState = SharedState
 
+        self.connect_to_ugot()
+
     def connect_to_ugot(self):
         # use sbbot instance to scan
         devices = self.sbbot.scan_device()
@@ -18,6 +20,7 @@ class RobotController:
                     self.sbbot.initialize(value)
                 case ns_shared.ENGBOT_NAME:
                     self.engbot.initialize(value)
+        if sbbot.ini
 
 
     def mainloop(self):
