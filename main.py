@@ -9,13 +9,16 @@ import ns_shared
 
 
 def main():
-    got = ugot.UGOT()
+    SBBot = ugot.UGOT()
+    ENGBot = ugot.UGOT()
 
     QueueChannels = ns_shared.QueueChannels()
     SharedState = ns_shared.SharedState()
 
     gui = ns_gui.GUI()
-    process_manager = ns_controller.ProcessManager(got, QueueChannels, SharedState)
+    process_manager = ns_controller.ProcessManager(
+        SBBot, ENGBot, QueueChannels, SharedState
+    )
 
     threads = [
         threading.Thread(target=process_manager.mainloop()),

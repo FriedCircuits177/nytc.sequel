@@ -61,7 +61,7 @@ def main():
 
         # Wait 1 ms for a key press
         # If the 'q' key is pressed, exit the loop
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     # Release the webcam when the program ends

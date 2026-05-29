@@ -1,6 +1,8 @@
 from enum import Enum
 
 
+
+
 class State:
     """Class defining primary states/phases"""
 

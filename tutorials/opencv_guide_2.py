@@ -2,8 +2,8 @@
 2_webcam.py
 
 This program opens the computer's webcam and displays the live video feed.
-In addition to showing the webcam image, it shows you how to draw a rectangle 
-on the frame and overlay text. 
+In addition to showing the webcam image, it shows you how to draw a rectangle
+on the frame and overlay text.
 """
 
 import cv2  # Import OpenCV library for webcam capture and drawing functions
@@ -43,7 +43,7 @@ def main():
             cv2.FONT_HERSHEY_SIMPLEX,
             1,
             (255, 0, 0),
-            2
+            2,
         )
 
         # Display the modified frame in a window
@@ -51,7 +51,7 @@ def main():
 
         # Wait 1 ms for a key press
         # If the 'q' key is pressed, exit the loop
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     # Release the webcam when the program ends

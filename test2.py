@@ -26,11 +26,10 @@ got.open_camera()
 print("Initialise done!")
 
 
-
 def get_face_direction():
     print("finding face...")
     direction = "ERROR"
-    
+
     return direction
 
 
@@ -38,7 +37,7 @@ def throw():
     angle_offset = 25
     J1_angle = 0
     direction = get_face_direction()
-    print(f"Direction is:" , direction , "!")
+    print(f"Direction is:", direction, "!")
     if direction == "LEFT":
         J1_angle = -angle_offset
     elif direction == "RIGHT":
@@ -62,4 +61,3 @@ def throw():
     got.mechanical_clamp_release()
     got.mechanical_joint_control(J1_angle, 0, 0, 100)
     print("Did I hit?")
-    
