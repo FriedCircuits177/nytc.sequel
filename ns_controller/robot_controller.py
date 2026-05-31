@@ -1,10 +1,11 @@
 from ugot import ugot
 
 import ns_shared
+import ns_robot
 
 
 class RobotController:
-    def __init__(self, sbbot: ugot.UGOT, engbot: ugot.UGOT, QueueChannels, SharedState):
+    def __init__(self, sbbot: ns_robot.RobotHardware, engbot: ns_robot.RobotHardware, QueueChannels, SharedState):
         self.sbbot = sbbot
         self.engbot = engbot
         self.queue_channels = QueueChannels
@@ -14,13 +15,13 @@ class RobotController:
 
     def connect_to_ugot(self):
         # use sbbot instance to scan
-        devices = self.sbbot.scan_device()
+        devices = self.sbbot._sdk.scan_device()
         for key, value in devices.items():
             match key:
                 case ns_shared.SBBOT_NAME:
-                    self.sbbot.initialize(value)
+                    self.sbbot._sdk.initialize(value)
                 case ns_shared.ENGBOT_NAME:
-                    self.engbot.initialize(value)
+                    self.engbot._sdk.initialize(value)
 
     def mainloop(self):
         """
@@ -28,8 +29,8 @@ class RobotController:
         be a good boy, and just be easily killable by process_manager."""
         while not self.queue_channels.kill_flag.is_set():
             pass
-        self.sbbot.balance_stop_balancing()
-        self.engbot.mecanum_stop()
+        self.sbbot._sdk.balance_stop_balancing()
+        self.engbot._sdk.mecanum_stop()
         # now it shld die
 
     def phase1(self):

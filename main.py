@@ -6,14 +6,15 @@ from ugot import ugot
 import ns_controller
 import ns_gui
 import ns_shared
+import ns_robot
 
 
 def main():
-    SBBot = ugot.UGOT()
-    ENGBot = ugot.UGOT()
-
     QueueChannels = ns_shared.QueueChannels()
     SharedState = ns_shared.SharedState()
+
+    SBBot = ns_robot.RobotHardware(QueueChannels,SharedState) #these are wrappers for ugot.UGOT.
+    ENGBot = ns_robot.RobotHardware(QueueChannels,SharedState) #call methods by RobotHardware._sdk.whatever()
 
     gui = ns_gui.GUI()
     process_manager = ns_controller.ProcessManager(

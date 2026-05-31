@@ -2,14 +2,13 @@ import base64
 
 import pygame
 from turbojpeg import TurboJPEG
-from ugot import ugot
 
 from ns_shared import QueueChannels, SharedState
-
+import ns_robot
 
 class Camera:
     def __init__(
-        self, robot: ugot.UGOT, queue_channels: QueueChannels, shared_state: SharedState
+        self, robot: ns_robot.RobotHardware, queue_channels: QueueChannels, shared_state: SharedState
     ):
         self.robot = robot
         self.tj = TurboJPEG()
@@ -18,9 +17,9 @@ class Camera:
 
     def readEncodedFrame(self) -> str:
         """Returns raw base64 encoded JPEG frame from robot camera."""
-        input_data = self.robot.VISION.vision_pb2.ReadCameraDataRequest()
+        input_data = self.robot._sdk.VISION.vision_pb2.ReadCameraDataRequest()
         input_data.extra = ""
-        return self.robot.VISION.client.readCameraData(
+        return self.robot._sdk.VISION.client.readCameraData(
             input_data
         )  # reads from low-level unary_unary channel
 
