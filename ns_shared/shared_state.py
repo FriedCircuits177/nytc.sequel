@@ -49,4 +49,18 @@ class SharedState:
             "circle": False,
             "square": False,
             "triangle": False,
+            "d_up": False,
+            "d_down": False,
+            "d_left": False,
+            "d_right": False,
         }
+
+        # gui <-> backend peripheral command stuff
+        self.peripheral_sbbot_status = False
+        self.peripheral_sbbot_status_lock = threading.Lock()
+
+        self.peripheral_engbot_status = False
+        self.peripheral_engbot_status_lock = threading.Lock()
+
+        self.peripheral_controller_status = False
+        self.peripheral_controller_status_lock = threading.Lock()

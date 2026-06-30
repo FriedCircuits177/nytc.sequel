@@ -40,6 +40,17 @@ class RobotHardware:
             return
         logger.info(f"Succesfully connected to {self.type} at {self.ip}")
 
+    def map_and_clamp(self, value, in_min, in_max, out_min, out_max):
+        # 1. Constrain the input value to the input range
+        value = max(in_min, min(value, in_max))
+
+        # 2. Map the value proportionally to the output range
+        ratio = (value - in_min) / (in_max - in_min)
+        mapped_value = out_min + ratio * (out_max - out_min)
+
+        # 3. Final safety clamp in case of floating-point inaccuracies
+        return max(out_min, min(mapped_value, out_max))
+
     def calculate_mecanum_powers(self, joy_x, joy_y, joy_r, max_rpm):
         """
         Translates joystick inputs into normalized motor powers for a 4WD Mecanum robot.

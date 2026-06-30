@@ -89,8 +89,8 @@ class ProcessManager:
         else:
             self.threads = [
                 ns_shared.construct_thread(self.robot_controller.mainloop),
-                ns_shared.construct_thread(self.sbbot_camera.mainloop),
-                ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
+                # ns_shared.construct_thread(self.sbbot_camera.mainloop),
+                # ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
                 ns_shared.construct_thread(self.engbot_camera.mainloop),
                 ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
                 ns_shared.construct_thread(self.webcam.mainloop),

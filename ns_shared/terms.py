@@ -54,3 +54,14 @@ class PhaseState:
             self.phase_queue = timeline_config
         self.current_phase_index = None
         self.is_running = threading.Event()
+
+
+class PeripheralStatus(Enum):
+    CONNECTED = "Connected"
+    CONNECTING = "Connecting..."
+    DISCONNECTED = "Disconnected"
+
+
+class PeripheralConnectionCommand(Enum):
+    CONNECT = "Connect"
+    DISCONNECT = "DISCONNECT"

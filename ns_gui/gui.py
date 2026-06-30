@@ -455,6 +455,158 @@ class PhaseTimeline(BaseWindow):
         return None
 
 
+class PeripheralWindow(BaseWindow):
+    def __init__(self, gui):
+        super().__init__(gui, "Peripheral Connections")
+
+        # --- CONFIGURATION REGISTRY ---
+        # Explicitly maps each peripheral row to its own dedicated tracking variables and command queue.
+        self.peripherals_config = [
+            {
+                "name": f"Self-Balancing Bot ({ns_shared.SBBOT_NAME})",
+                "id": "sb_bot",
+                "state_attr": "peripheral_sbbot_status",  # Variable in SharedState
+                "lock_attr": "peripheral_sbbot_status_lock",  # Lock in SharedState
+                "queue_attr": "peripheral_sbbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
+            },
+            {
+                "name": f"Engineer Bot ({ns_shared.ENGBOT_NAME})",
+                "id": "eng_bot",
+                "state_attr": "peripheral_engbot_status",  # Variable in SharedState
+                "lock_attr": "peripheral_engbot_status_lock",  # Lock in SharedState
+                "queue_attr": "peripheral_engbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
+            },
+            {
+                "name": "Controller",
+                "id": "controller",
+                "state_attr": "peripheral_controller_status",  # Variable in SharedState
+                "lock_attr": "peripheral_controller_status_lock",  # Lock in SharedState
+                "queue_attr": "peripheral_controller_command_queue",  # Dedicated Queue attribute name in QueueChannels
+            },
+            # Pseudocode Example for future expansion:
+            # {
+            #     "name": "ENGBot Manipulator Arm",
+            #     "id": "eng_arm",
+            #     "state_attr": "eng_arm_alive",
+            #     "lock_attr": "eng_arm_lock",
+            #     "queue_attr": "eng_arm_command_queue"
+            # }
+        ]
+
+    def build(self):
+        with dpg.window(
+            label=self.title, width=550, height=300, no_collapse=True
+        ) as self.window_tag:  # type: ignore
+            # Using a table layout for pixel-perfect vertical column alignment
+            with dpg.table(header_row=True, borders_innerH=True, borders_innerV=True):  # type: ignore
+                dpg.add_table_column(label="Device Name", width_stretch=True)
+                dpg.add_table_column(
+                    label="Status", width_fixed=True, init_width_or_weight=130
+                )
+                dpg.add_table_column(
+                    label="Action", width_fixed=True, init_width_or_weight=110
+                )
+
+                for item in self.peripherals_config:
+                    device_id = item["id"]
+
+                    with dpg.table_row():  # type: ignore
+                        # Column 1: Device Descriptive Name
+                        dpg.add_text(item["name"])
+
+                        # Column 2: Status Text Label (Colored programmatically in update)
+                        dpg.add_text("Unknown", tag=f"p_status_{device_id}")
+
+                        # Column 3: Contextual Action Toggle Button
+                        dpg.add_button(
+                            label="Connect",
+                            tag=f"p_btn_{device_id}",
+                            callback=self._cb_toggle_connection,
+                            user_data=item,  # Pass the specific row config directly to callback
+                        )
+
+    def update(self):
+        """Polls SharedState variables safely and refreshes UI values dynamically."""
+        for item in self.peripherals_config:
+            device_id = item["id"]
+
+            # 1. Dynamically retrieve the lock and variable reference from SharedState
+            lock = getattr(self.gui.shared_state, item["lock_attr"], None)
+            if lock is None:
+                continue
+
+            with lock:
+                raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
+
+            # 2. Normalize status if the backend uses a simple boolean value
+            if isinstance(raw_status, bool):
+                if raw_status:
+                    status_enum = ns_shared.PeripheralStatus.CONNECTED
+                else:
+                    status_enum = ns_shared.PeripheralStatus.DISCONNECTED
+            else:
+                status_enum = raw_status
+
+            # 3. Map status state properties to textual UI elements and color weights
+            if status_enum == ns_shared.PeripheralStatus.CONNECTED:
+                text_val = "Connected"
+                text_color = (50, 220, 100, 255)  # Vibrant Green
+                btn_label = "Disconnect"
+            elif status_enum == ns_shared.PeripheralStatus.CONNECTING:
+                text_val = "Connecting..."
+                text_color = (255, 165, 0, 255)  # Orange
+                btn_label = "Disconnect"
+            else:
+                text_val = "Disconnected"
+                text_color = (220, 50, 50, 255)  # Red
+                btn_label = "Connect"
+
+            # 4. Push safe UI configuration mutations back directly to DearPyGUI layout elements
+            status_tag = f"p_status_{device_id}"
+            btn_tag = f"p_btn_{device_id}"
+
+            if dpg.does_item_exist(status_tag):
+                dpg.set_value(status_tag, text_val)
+                dpg.configure_item(status_tag, color=text_color)
+
+            if dpg.does_item_exist(btn_tag):
+                dpg.configure_item(btn_tag, label=btn_label)
+
+    def _cb_toggle_connection(self, sender, app_data, user_data):
+        """Universal dispatcher tracking current context state to flag backend actions."""
+        item = user_data
+        device_id = item["id"]
+
+        # 1. Pull live state value to evaluate target action logic safely
+        lock = getattr(self.gui.shared_state, item["lock_attr"])
+        with lock:
+            raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
+
+        # 2. Evaluate current state to determine inverted command
+        if (
+            raw_status is True
+            or raw_status == ns_shared.PeripheralStatus.CONNECTED
+            or raw_status == ns_shared.PeripheralStatus.CONNECTING
+        ):
+            target_command = ns_shared.PeripheralConnectionCommand.DISCONNECT
+        else:
+            target_command = ns_shared.PeripheralConnectionCommand.CONNECT
+
+        # 3. Dynamically resolve the dedicated queue for this individual backend device
+        target_queue = getattr(self.gui.queue_channels, item["queue_attr"], None)
+
+        if target_queue is not None:
+            logger.info(
+                f"GUI Command Sent: Requesting {target_command.name} via queue '{item['queue_attr']}'"
+            )
+            # Put the explicit command directly into the target device's private channel
+            target_queue.put({"command": target_command})
+        else:
+            logger.error(
+                f"Failed to dispatch command: Queue channel '{item['queue_attr']}' not found in QueueChannels!"
+            )
+
+
 class GUI:
     def __init__(self, QueueChannels, SharedState):
         self.queue_channels = QueueChannels
@@ -494,7 +646,7 @@ class GUI:
         )
 
         self.windows.append(PhaseTimeline(self))
-
+        self.windows.append(PeripheralWindow(self))
         for window in self.windows:
             window.build()
 

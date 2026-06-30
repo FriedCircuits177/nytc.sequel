@@ -26,7 +26,7 @@ class RobotController:
         self.sbbot = sbbot
         if not ns_shared.DEBUG_MODE:
             self.setup_engbot(engbot)
-            self.setup_sbbot(sbbot)
+            # self.setup_sbbot(sbbot)
 
     def setup_engbot(self, engbot):
         logger.info("Attempting to connect ENGBot...")
@@ -145,7 +145,7 @@ class RobotController:
         self.opcontrol()
         self.advance_phase()
 
-    def opcontrol(self):
+    def opcontrol_legacy(self):
         self.max_rpm = 360
 
         # --- Tuning Variables ---
@@ -216,6 +216,41 @@ class RobotController:
 
             # Keep your thread execution cycle polite to the CPU
             time.sleep(0.01)
+
+    def opcontrol(self, joystick_control=True):
+        """fall back option using mecanum_move_xyz"""
+        if joystick_control:
+            self.queue_channels.vibrate_flag.set()
+        while not self.queue_channels.kill_flag.is_set():
+            self.max_speed = 80  # cm/s dumb sdk lol
+            self.max_rotation_speed = 280
+            with self.sharedState.drive_command_lock:
+                buttons = self.sharedState.controller_buttons
+                x_movement = self.sharedState.drive_x
+                y_movement = self.sharedState.drive_y
+                r_movement = self.sharedState.drive_r
+
+            if buttons["cross"]:
+                break
+            x_movement = int(
+                self.engbot.map_and_clamp(
+                    x_movement, -1, 1, -self.max_speed, self.max_speed
+                )
+            )
+            y_movement = int(
+                self.engbot.map_and_clamp(
+                    y_movement, -1, 1, -self.max_speed, self.max_speed
+                )
+            )
+            r_movement = -int(
+                self.engbot.map_and_clamp(
+                    r_movement, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                )
+            )
+
+            self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+            time.sleep(0.02)
+        self.engbot._sdk.mecanum_stop()
 
     def advance_phase(self):
         with self.sharedState.phase_state.lock:
