@@ -31,20 +31,20 @@ class Camera:
         self.tj = TurboJPEG(ns_shared.TURBOJPEG_PATH)
 
     def readEncodedFrame(self) -> str:
-        """Reads raw base64 encoded JPEG frame from the robot camera via gRPC."""
+        """Reads raw base64 encoded JPEG frame from the robot camera via gRPC and decodes it"""
         try:
             # Reads from low-level unary_unary channel
-            return self.robot._sdk.VISION.readCameraData().pdata
+            return self.robot._sdk.read_camera_data()
         except Exception as e:
             logger.error(f"Failed to read camera data from robot: {e}")
             return ""
 
-    def b64_to_bgr_turbo(self, b64_string: str) -> np.ndarray | None:
+    def b64_to_bgr_turbo(self, jpg_bytes) -> np.ndarray | None:
         """Converts raw base64 encoded JPEG into a standard OpenCV BGR numpy array."""
-        if not b64_string:
-            return None
+        # if not b64_string:
+        #     return None
         try:
-            jpg_bytes = base64.b64decode(b64_string)
+            # jpg_bytes = base64.b64decode(b64_string)
             # Directly decode to standard BGR array for your vision perception code
             bgr_frame = self.tj.decode(jpg_bytes, pixel_format=TJPF_BGR)
             return bgr_frame
@@ -74,6 +74,7 @@ class Camera:
                 bgr_frame = self.b64_to_bgr_turbo(b64_data)
                 self.put_camera_frame(bgr_frame)
             else:
+                print("IS NOT b64 DATA")
                 # Avoid aggressive spinning if the stream drops frames momentarily
                 time.sleep(0.001)
 

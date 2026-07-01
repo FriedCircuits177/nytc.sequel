@@ -10,6 +10,12 @@ from ns_shared.exceptions import PhaseAbortedException
 
 logger = logging.getLogger(__name__)
 
+import importlib
+
+import cv2
+import numpy as np
+from ugot import ugot
+
 
 class RobotController:
     def __init__(
@@ -154,18 +160,23 @@ class RobotController:
 
     def phase1(self):
         """sbb moves to april tag"""
-        pass
-
+        self.sbbot.SBB_AP_centralization_approaching(
+            distance=0.15, gap=20, fwd_spd=20, turn_spd=5
+        )
+        self.sbbot.SBB_charge_and_stop()
         self.advance_phase()
         # success so we return True
         return True
 
     def phase2(self):
-        got.face_recognition_add_name("Bad Guy")
         # Call red ball pickup code
-        # stop at line
-        # find villain at pos 1,2,3
+        self.engbot.red_ball_pickup()
+        # find villain
+        self.engbot.search_villain()
         # align and throw at pos 1,2,3
+        self.engbot.beat_up()
+
+        logger.info("P2 done")
 
         time.sleep(1)
         self.advance_phase()
@@ -188,19 +199,36 @@ class RobotController:
         self.opcontrol()
         self.advance_phase()
 
+
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""
         if joystick_control:
             self.queue_channels.vibrate_flag.set()
+        self.zoom = False
         while not self.queue_channels.kill_flag.is_set():
-            self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
+            #print("OPCONTROL IS ALIVE")
+            #self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
+            self.max_zoom_rpm = 360
             with self.sharedState.drive_command_lock:
                 buttons = self.sharedState.controller_buttons
                 x_movement = self.sharedState.drive_x
                 y_movement = self.sharedState.drive_y
                 r_movement = self.sharedState.drive_r
+                r2 = self.sharedState.drive_r2
+
+            if r2 > 0.4 and not self.zoom:
+                self.engbot._sdk.mecanum_motor_control(self.max_zoom_rpm,self.max_zoom_rpm,self.max_zoom_rpm,self.max_zoom_rpm)
+                self.zoom = True
+                continue
+            elif r2 > 0.4 and self.zoom:
+                time.sleep(0.02)
+                continue
+            elif r2 < 0.4 and self.zoom:
+                self.zoom = False
+
+
 
             if buttons["cross"]:
                 break
@@ -214,7 +242,7 @@ class RobotController:
                     y_movement, -1, 1, -self.max_speed, self.max_speed
                 )
             )
-            r_movement = -int(
+            r_movement = int(
                 self.engbot.map_and_clamp(
                     r_movement, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
                 )

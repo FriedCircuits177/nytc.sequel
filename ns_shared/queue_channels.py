@@ -10,6 +10,7 @@ class QueueChannels:
         self.kill_flag = threading.Event()
         self.vibrate_flag = threading.Event()
         self.force_stop_phase_flag = threading.Event()
+        self.pose_recog_flag = threading.Event()
 
         self.turbo_drive_flag = threading.Event()
 

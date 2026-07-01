@@ -17,8 +17,9 @@ class PS4ControllerDriver:
     def __init__(self, queue_channels: QueueChannels, shared_state: SharedState):
         self.queue_channels = queue_channels
         self.shared_state = shared_state
-
+        os.environ["SDL_VIDEODRIVER"] = "dummy"
         pygame.init()
+        pygame.display.set_mode((1, 1))
         pygame.joystick.init()
 
         self.joystick = None
@@ -38,6 +39,7 @@ class PS4ControllerDriver:
                 ns_shared.PeripheralStatus.CONNECTING
             )
         pygame.joystick.quit()
+
         pygame.joystick.init()
 
         joystick_count = pygame.joystick.get_count()
@@ -94,7 +96,8 @@ class PS4ControllerDriver:
     def mainloop(self):
         """Dedicated loop pumping hardware events and publishing vectors to state."""
         while not self.queue_channels.kill_flag.is_set():
-            # Connection loop if the hardware drops out
+            # Connection loop if the hardware drops out\
+            #print("CONTROLLER DRIVER ALIVE")
             if self.queue_channels.peripheral_controller_command_queue.full():
                 if (
                     self.queue_channels.peripheral_controller_command_queue.get()
@@ -125,10 +128,11 @@ class PS4ControllerDriver:
                 pygame.event.pump()  # Flushes the OS event message registers
 
                 # 1. Capture Analog Stick Movements
+                raw_r2 = self.joystick.get_axis(4)
                 raw_x = self.joystick.get_axis(0)
                 raw_y = -self.joystick.get_axis(1)
                 raw_r = -self.joystick.get_axis(2)
-
+                #print(f"{raw_x},{raw_y},{raw_r}")
                 # 2. Process math limits
                 x_vel = self.filter_deadzone(raw_x)
                 y_vel = self.filter_deadzone(raw_y)
@@ -146,13 +150,14 @@ class PS4ControllerDriver:
                 self.controller_buttons["d_right"] = bool(self.joystick.get_button(14))
 
                 # Dispatches releases checking old states vs new states
-                self.joystick_flag_send()
+                #self.joystick_flag_send()
 
                 # 3. Safely update coordinates in shared state
                 with self.shared_state.drive_command_lock:
                     self.shared_state.drive_x = x_vel
                     self.shared_state.drive_y = y_vel
                     self.shared_state.drive_r = r_vel
+                    self.shared_state.drive_r2 = raw_r2
                     self.shared_state.controller_buttons = (
                         self.controller_buttons.copy()
                     )
@@ -168,4 +173,4 @@ class PS4ControllerDriver:
                     )
 
             # Keep CPU happy: ~100Hz loop rate cuts thread cost down close to 0%
-            time.sleep(0.01)
+            time.sleep(0.01) # 10ms I think

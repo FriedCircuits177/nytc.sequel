@@ -397,7 +397,8 @@ class PhaseTimeline(BaseWindow):
         logger.info("Automation Pipeline Signal: PLAY Set")
 
     def _cb_stop(self, sender, app_data):
-        state = self.gui.shared_state.phase_state
+        with self.gui.shared_state.phase_state.lock:
+            self.gui.shared_state.phase_state.is_running.clear()
         self.gui.queue_channels.force_stop_phase_flag.set()
         logger.info(
             "Automation Pipeline Signal: Set gui.queue_channels.force_stop_phase_flag"
