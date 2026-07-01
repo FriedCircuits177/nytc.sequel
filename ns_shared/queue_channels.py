@@ -14,14 +14,17 @@ class QueueChannels:
 
         self.turbo_drive_flag = threading.Event()
 
-        self.gui_start_flag = threading.Event()
-        self.gui_stop_flag = threading.Event()
-        self.gui_left_flag = threading.Event()
-        self.gui_right_flag = threading.Event()
+        self.sbbot_camera_active_flag = threading.Event()
+        self.engbot_camera_active_flag = threading.Event()
 
-        self.block_detection_data = queue.Queue(1)
+        # self.gui_start_flag = threading.Event()
+        # self.gui_stop_flag = threading.Event()
+        # self.gui_left_flag = threading.Event()
+        # self.gui_right_flag = threading.Event()
+
+        # self.block_detection_data = queue.Queue(1)
 
         # these 3 handle disconnect/connect commands
-        self.peripheral_sbbot_command_queue = queue.Queue(1)
-        self.peripheral_engbot_command_queue = queue.Queue(1)
-        self.peripheral_controller_command_queue = queue.Queue(1)
+        # self.peripheral_sbbot_command_queue = queue.Queue(1)
+        # self.peripheral_engbot_command_queue = queue.Queue(1)
+        # self.peripheral_controller_command_queue = queue.Queue(1)

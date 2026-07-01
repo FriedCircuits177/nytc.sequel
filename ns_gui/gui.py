@@ -623,9 +623,15 @@ class RobotCameraCycleWindow(BaseWindow):
                     {
                         "caption": "SBBot Camera",
                         "frame_attr_name": "sb_gui_camera_frame",
-                        "frame_lock": self.shared_state.sb_gui_camera_frame_lock
+                        "frame_lock": self.shared_state.sb_gui_camera_frame_lock,
+                        "active_attr_name": "robot_camera_active"  # <--- Added flag string
                     },
-                    ...
+                    {
+                        "caption": "Webcam Feed",
+                        "frame_attr_name": "webcam_camera_frame",
+                        "frame_lock": self.shared_state.webcam_camera_frame_lock,
+                        "active_attr_name": "webcam_active"        # <--- Added flag string
+                    }
                 ]
         """
         # Initialize with the first camera's caption as a default title
@@ -677,6 +683,9 @@ class RobotCameraCycleWindow(BaseWindow):
             dpg.add_item_clicked_handler(callback=self._handle_feed_click)
         dpg.bind_item_handler_registry(self.image_tag, self.handler_registry_tag)
 
+        # Sync the initial threading state for all cameras on application boot
+        self._sync_camera_thread_states()
+
     def _handle_feed_click(self, sender, app_data):
         # app_data structured as: [mouse_button, status]
         mouse_button = app_data[0]
@@ -689,7 +698,24 @@ class RobotCameraCycleWindow(BaseWindow):
             new_config = self.camera_configs[self.current_index]
             dpg.configure_item(self.window_tag, label=new_config["caption"])
 
+            # Dynamically flip the threading execution flags on the SharedState object
+            self._sync_camera_thread_states()
+
             logger.info(f"Camera window cycled to view: {new_config['caption']}")
+
+    def _sync_camera_thread_states(self):
+        """Iterates through camera configurations and flips the threading.Event states."""
+        for idx, config in enumerate(self.camera_configs):
+            attr_name = config.get("active_attr_name")
+            if attr_name:
+                # Retrieve the event object from queue_channels safely
+                event = getattr(self.gui.queue_channels, attr_name, None)
+
+                if event:
+                    if idx == self.current_index:
+                        event.set()  # Resume thread execution
+                    else:
+                        event.clear()  # Pause thread execution
 
     def update(self):
         if not self.camera_configs:
@@ -708,6 +734,40 @@ class RobotCameraCycleWindow(BaseWindow):
             return
 
         dpg.set_value(self.texture_tag, frame.ravel())
+
+
+class SaveLayoutWindow(BaseWindow):
+    def __init__(self, gui):
+        super().__init__(gui, "Layout Manager")
+        self.window_tag = "temporary_layout_window"
+
+    def build(self):
+        # Prevent the window from being saved to the .ini file itself,
+        # and configure it as a small, clean utility window.
+        with dpg.window(
+            label=self.title,
+            tag=self.window_tag,
+            width=200,
+            height=80,
+            no_resize=True,
+            no_saved_settings=True,  # <--- Crucial line!
+        ):  # type: ignore
+            dpg.add_button(
+                label="Save Current Layout",
+                callback=self._cb_save_layout,
+                width=-1,  # Fill the window width horizontally
+                height=-1,  # Fill the window height vertically
+            )
+
+    def _cb_save_layout(self, sender, app_data):
+        try:
+            # Serializes the active layout states into dpg_default_layout.ini
+            dpg.save_init_file("dpg_default_layout.ini")
+            logger.info(
+                "GUI layout successfully serialized to 'dpg_default_layout.ini'"
+            )
+        except Exception as e:
+            logger.error(f"Failed to save layout settings: {e}")
 
 
 class GUI:
@@ -731,11 +791,13 @@ class GUI:
                 "caption": "SBBot Camera",
                 "frame_attr_name": "sb_gui_camera_frame",
                 "frame_lock": self.shared_state.sb_gui_camera_frame_lock,
+                "active_attr_name": "sbbot_camera_active_flag",
             },
             {
                 "caption": "ENGBot Camera",
                 "frame_attr_name": "eng_gui_camera_frame",
                 "frame_lock": self.shared_state.eng_gui_camera_frame_lock,
+                "active_attr_name": "engbot_camera_active_flag",
             },
             # You can append unlimited dictionaries here dynamically later!
         ]
@@ -759,38 +821,6 @@ class GUI:
         #         frame_lock=self.shared_state.eng_gui_camera_frame_lock,
         #     )
         # )
-        class SaveLayoutWindow(BaseWindow):
-            def __init__(self, gui):
-                super().__init__(gui, "Layout Manager")
-                self.window_tag = "temporary_layout_window"
-
-            def build(self):
-                # Prevent the window from being saved to the .ini file itself,
-                # and configure it as a small, clean utility window.
-                with dpg.window(
-                    label=self.title,
-                    tag=self.window_tag,
-                    width=200,
-                    height=80,
-                    no_resize=True,
-                    no_saved_settings=True,  # <--- Crucial line!
-                ):  # type: ignore
-                    dpg.add_button(
-                        label="Save Current Layout",
-                        callback=self._cb_save_layout,
-                        width=-1,  # Fill the window width horizontally
-                        height=-1,  # Fill the window height vertically
-                    )
-
-            def _cb_save_layout(self, sender, app_data):
-                try:
-                    # Serializes the active layout states into dpg_default_layout.ini
-                    dpg.save_init_file("dpg_default_layout.ini")
-                    logger.info(
-                        "GUI layout successfully serialized to 'dpg_default_layout.ini'"
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save layout settings: {e}")
 
         self.windows.append(PhaseTimeline(self))
         self.windows.append(

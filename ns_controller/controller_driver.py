@@ -34,10 +34,10 @@ class PS4ControllerDriver:
 
     def init_controller(self) -> bool:
         """Attempts to discover and lock onto a connected PS4 controller."""
-        with self.shared_state.peripheral_controller_status_lock:
-            self.shared_state.peripheral_controller_status = (
-                ns_shared.PeripheralStatus.CONNECTING
-            )
+        # with self.shared_state.peripheral_controller_status_lock:
+        #     self.shared_state.peripheral_controller_status = (
+        #         ns_shared.PeripheralStatus.CONNECTING
+        #     )
         pygame.joystick.quit()
 
         pygame.joystick.init()
@@ -97,28 +97,28 @@ class PS4ControllerDriver:
         """Dedicated loop pumping hardware events and publishing vectors to state."""
         while not self.queue_channels.kill_flag.is_set():
             # Connection loop if the hardware drops out\
-            #print("CONTROLLER DRIVER ALIVE")
-            if self.queue_channels.peripheral_controller_command_queue.full():
-                if (
-                    self.queue_channels.peripheral_controller_command_queue.get()
-                    == ns_shared.PeripheralConnectionCommand.DISCONNECT
-                ):
-                    # gui asked for dc so we forcefully dc
-                    print("disconnecting")
-                    self.joystick = None
-                    with self.shared_state.peripheral_controller_status_lock:
-                        self.shared_state.peripheral_controller_status = (
-                            ns_shared.PeripheralStatus.DISCONNECTED
-                        )
+            # print("CONTROLLER DRIVER ALIVE")
+            # if self.queue_channels.peripheral_controller_command_queue.full():
+            #     if (
+            #         self.queue_channels.peripheral_controller_command_queue.get()
+            #         == ns_shared.PeripheralConnectionCommand.DISCONNECT
+            #     ):
+            #         # gui asked for dc so we forcefully dc
+            #         print("disconnecting")
+            #         self.joystick = None
+            #         with self.shared_state.peripheral_controller_status_lock:
+            #             self.shared_state.peripheral_controller_status = (
+            #                 ns_shared.PeripheralStatus.DISCONNECTED
+            #             )
             if not self.joystick:
                 if not self.init_controller():
                     time.sleep(2.0)
                     continue
                 # initialisation succesful
-                with self.shared_state.peripheral_controller_status_lock:
-                    self.shared_state.peripheral_controller_status = (
-                        ns_shared.PeripheralStatus.CONNECTED
-                    )
+                # with self.shared_state.peripheral_controller_status_lock:
+                #     self.shared_state.peripheral_controller_status = (
+                #         ns_shared.PeripheralStatus.CONNECTED
+                #     )
 
             try:
                 if self.queue_channels.vibrate_flag.is_set():
@@ -132,7 +132,7 @@ class PS4ControllerDriver:
                 raw_x = self.joystick.get_axis(0)
                 raw_y = -self.joystick.get_axis(1)
                 raw_r = -self.joystick.get_axis(2)
-                #print(f"{raw_x},{raw_y},{raw_r}")
+                # print(f"{raw_x},{raw_y},{raw_r}")
                 # 2. Process math limits
                 x_vel = self.filter_deadzone(raw_x)
                 y_vel = self.filter_deadzone(raw_y)
@@ -150,7 +150,7 @@ class PS4ControllerDriver:
                 self.controller_buttons["d_right"] = bool(self.joystick.get_button(14))
 
                 # Dispatches releases checking old states vs new states
-                #self.joystick_flag_send()
+                # self.joystick_flag_send()
 
                 # 3. Safely update coordinates in shared state
                 with self.shared_state.drive_command_lock:
@@ -167,10 +167,10 @@ class PS4ControllerDriver:
                 self.joystick = (
                     None  # Resets state to force re-connection sequence next loop
                 )
-                with self.shared_state.peripheral_controller_status_lock:
-                    self.shared_state.peripheral_controller_status = (
-                        ns_shared.PeripheralStatus.DISCONNECTED
-                    )
+                # with self.shared_state.peripheral_controller_status_lock:
+                #     self.shared_state.peripheral_controller_status = (
+                #         ns_shared.PeripheralStatus.DISCONNECTED
+                #     )
 
             # Keep CPU happy: ~100Hz loop rate cuts thread cost down close to 0%
-            time.sleep(0.01) # 10ms I think
+            time.sleep(0.01)  # 10ms I think

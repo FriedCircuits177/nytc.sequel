@@ -8,6 +8,7 @@ import ns_shared
 
 logger = logging.getLogger(__name__)
 
+
 class ProcessManager:
     def __init__(
         self,
@@ -29,6 +30,7 @@ class ProcessManager:
             SharedState,
             SharedState.sb_camera_frame,
             SharedState.sb_camera_frame_lock,
+            QueueChannels.sbbot_camera_active_flag,
         )
         self.sbbot_camera_gui_processor = ns_perception.CameraGUIProcessor(
             QueueChannels,
@@ -37,6 +39,7 @@ class ProcessManager:
             SharedState.sb_camera_frame_lock,
             SharedState.sb_gui_camera_frame,
             SharedState.sb_gui_camera_frame_lock,
+            QueueChannels.sbbot_camera_active_flag,
         )
         self.engbot_camera = ns_perception.Camera(
             self.ENGBot,
@@ -44,6 +47,7 @@ class ProcessManager:
             SharedState,
             SharedState.eng_camera_frame,
             SharedState.eng_camera_frame_lock,
+            QueueChannels.engbot_camera_active_flag,
         )
         self.engbot_camera_gui_processor = ns_perception.CameraGUIProcessor(
             QueueChannels,
@@ -52,6 +56,7 @@ class ProcessManager:
             SharedState.eng_camera_frame_lock,
             SharedState.eng_gui_camera_frame,
             SharedState.eng_gui_camera_frame_lock,
+            QueueChannels.engbot_camera_active_flag,
         )
         self.webcam = ns_perception.Webcam(
             QueueChannels,
@@ -73,7 +78,7 @@ class ProcessManager:
             SharedState,
         )
         self.ps4_driver = ns_controller.PS4ControllerDriver(QueueChannels, SharedState)
-        #self.pose_recog = ns_perception.MediaPipePoseRecog(QueueChannels, SharedState)
+        # self.pose_recog = ns_perception.MediaPipePoseRecog(QueueChannels, SharedState)
         if ns_shared.DEBUG_MODE:
             self.threads = [
                 ns_shared.construct_thread(self.robot_controller.mainloop),
@@ -97,7 +102,7 @@ class ProcessManager:
                 ns_shared.construct_thread(self.webcam_processor.mainloop),
                 ns_shared.construct_thread(self.block_detection.mainloop),
                 ns_shared.construct_thread(self.ps4_driver.mainloop),
-                #ns_shared.construct_thread(self.pose_recog.mainloop),
+                # ns_shared.construct_thread(self.pose_recog.mainloop),
             ]
 
         for _ in self.threads:

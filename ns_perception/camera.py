@@ -20,13 +20,14 @@ class Camera:
         shared_state: ns_shared.SharedState,
         camera_frame,
         camera_frame_lock,
+        active_flag,
     ):
         self.robot = robot
         self.queue_channels = queue_channels
         self.shared_state = shared_state
         self.camera_frame = camera_frame
         self.camera_frame_lock = camera_frame_lock
-
+        self.active_flag = active_flag
         # Initialize TurboJPEG decoder
         self.tj = TurboJPEG(ns_shared.TURBOJPEG_PATH)
 
@@ -76,12 +77,13 @@ class Camera:
                 # logging.error(e)
                 continue
         while not self.queue_channels.kill_flag.is_set():
+            self.active_flag.wait()
             b64_data = self.readEncodedFrame()
             if b64_data:
                 bgr_frame = self.b64_to_bgr_turbo(b64_data)
                 self.put_camera_frame(bgr_frame)
             else:
-                print("IS NOT b64 DATA")
+                # print("IS NOT b64 DATA")
                 # Avoid aggressive spinning if the stream drops frames momentarily
                 time.sleep(0.001)
 
@@ -97,6 +99,7 @@ class CameraGUIProcessor:
         raw_camera_frame_lock,
         gui_camera_frame,
         gui_camera_frame_lock,
+        active_flag,
     ):
         self.queue_channels = queue_channels
         self.shared_state = shared_state
@@ -104,7 +107,7 @@ class CameraGUIProcessor:
         self.raw_camera_frame_lock = raw_camera_frame_lock
         self.gui_camera_frame = gui_camera_frame
         self.gui_camera_frame_lock = gui_camera_frame_lock
-
+        self.active_flag = active_flag
         # DearPyGUI standard viewport resolution configuration
         self.width = 640
         self.height = 480
@@ -136,6 +139,7 @@ class CameraGUIProcessor:
 
         while not self.queue_channels.kill_flag.is_set():
             # Safely fetch the latest raw frame depending on the assigned lock
+            self.active_flag.wait()
             with self.raw_camera_frame_lock:
                 if self.raw_camera_frame_lock is self.shared_state.sb_camera_frame_lock:
                     frame = self.shared_state.sb_camera_frame
