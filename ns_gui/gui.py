@@ -649,7 +649,7 @@ class GUI:
         )
 
         self.windows.append(PhaseTimeline(self))
-        self.windows.append(PeripheralWindow(self))
+        # self.windows.append(PeripheralWindow(self))
         for window in self.windows:
             window.build()
 

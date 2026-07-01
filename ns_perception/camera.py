@@ -30,7 +30,7 @@ class Camera:
         # Initialize TurboJPEG decoder
         self.tj = TurboJPEG(ns_shared.TURBOJPEG_PATH)
 
-    def readEncodedFrame(self) -> str:
+    def readEncodedFrame(self):
         """Reads raw base64 encoded JPEG frame from the robot camera via gRPC and decodes it"""
         try:
             # Reads from low-level unary_unary channel
@@ -68,6 +68,13 @@ class Camera:
     def mainloop(self):
         """Thread loop pulling robot frames and pushing them out as raw BGR frames."""
         logger.info("Robot Camera ingestion loop started.")
+        while not self.queue_channels.kill_flag.is_set():
+            try:
+                self.robot._sdk.open_camera()
+                break
+            except Exception as e:
+                # logging.error(e)
+                continue
         while not self.queue_channels.kill_flag.is_set():
             b64_data = self.readEncodedFrame()
             if b64_data:

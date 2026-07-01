@@ -1,4 +1,6 @@
 import logging
+import time
+
 import cv2
 import numpy as np
 from ugot import ugot
@@ -11,7 +13,14 @@ logger = logging.getLogger(__name__)
 class RobotHardware:
     """Wrapper for the ugot.UGOT instance to allow for custom methods."""
 
-    def __init__(self, queue_channels: ns_shared.QueueChannels, shared_state: ns_shared.SharedState, name, type, ip):
+    def __init__(
+        self,
+        queue_channels: ns_shared.QueueChannels,
+        shared_state: ns_shared.SharedState,
+        name,
+        type,
+        ip,
+    ):
         self._sdk = ugot.UGOT()
         self.queue_channels = queue_channels
         self.shared_state = shared_state
@@ -171,7 +180,6 @@ class RobotHardware:
         self._sdk.screen_display_background(6)
         self._sdk.balance_move_speed(0, 0)
 
-
     def register_villian(self):
         logging.info("Registering villian...")
         self._sdk.face_recognition_add_name("Bad Guy")
@@ -180,7 +188,7 @@ class RobotHardware:
     def red_ball_pickup(self):
         """Detect the red ball and drive toward it; pick it up when close enough.
 
-            uses cv2 and numpy
+        uses cv2 and numpy
         """
         CAMERA_FRAME_WIDTH = 640
         CAMERA_FRAME_HEIGHT = 480
@@ -260,7 +268,9 @@ class RobotHardware:
                         # joint_control(j1_base, j2_mid, j3_tip, duration_ms)
                         # Negative j2/j3 angles tilt the arm downward toward the floor.
                         self._sdk.mechanical_clamp_release()  # Open gripper
-                        self._sdk.mechanical_joint_control(0, -30, -55, 1500)  # Lower arm to ball
+                        self._sdk.mechanical_joint_control(
+                            0, -30, -55, 1500
+                        )  # Lower arm to ball
                         time.sleep(2)  # Wait for arm to reach position
                         self._sdk.mechanical_clamp_close()  # Grab the ball
                         time.sleep(1)  # Wait for gripper to close
