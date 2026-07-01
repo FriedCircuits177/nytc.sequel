@@ -398,8 +398,10 @@ class PhaseTimeline(BaseWindow):
 
     def _cb_stop(self, sender, app_data):
         state = self.gui.shared_state.phase_state
-        state.is_running.clear()
-        logger.info("Automation Pipeline Signal: STOP Cleared")
+        self.gui.queue_channels.force_stop_phase_flag.set()
+        logger.info(
+            "Automation Pipeline Signal: Set gui.queue_channels.force_stop_phase_flag"
+        )
 
     def _cb_add_phase(self, sender, app_data):
         display_name = dpg.get_value(sender)

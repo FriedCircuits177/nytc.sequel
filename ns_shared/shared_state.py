@@ -3,7 +3,7 @@ import threading
 import time
 
 from ns_shared.config import DEFAULT_TIMELINE_CONFIG
-from ns_shared.terms import PhaseState
+from ns_shared.terms import PeripheralConnectionCommand, PeripheralStatus, PhaseState
 
 logger = logging.Logger(__name__)
 
@@ -56,11 +56,11 @@ class SharedState:
         }
 
         # gui <-> backend peripheral command stuff
-        self.peripheral_sbbot_status = False
+        self.peripheral_sbbot_status = PeripheralStatus.DISCONNECTED
         self.peripheral_sbbot_status_lock = threading.Lock()
 
-        self.peripheral_engbot_status = False
+        self.peripheral_engbot_status = PeripheralStatus.DISCONNECTED
         self.peripheral_engbot_status_lock = threading.Lock()
 
-        self.peripheral_controller_status = False
+        self.peripheral_controller_status = PeripheralStatus.DISCONNECTED
         self.peripheral_controller_status_lock = threading.Lock()

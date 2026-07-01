@@ -2,6 +2,8 @@ import logging
 
 from ugot import ugot
 
+import ns_shared
+
 logger = logging.getLogger(__name__)
 
 
@@ -31,6 +33,10 @@ class RobotHardware:
         #             return
         #         logger.info(f"Succesfully connected to {self.type} at {value}")
         # logger.error(f"COULD NOT FIND {self.type} ({self.name}) ON THE NETWORK")
+        with self.shared_state.peripheral_sbbot_status_lock:
+            self.shared_state.peripheral_sbbot_status = (
+                ns_shared.PeripheralStatus.CONNECTING
+            )
         try:
             self._sdk.initialize(self.ip)
         except Exception as e:
@@ -39,6 +45,10 @@ class RobotHardware:
             logger.error(f"COULD NOT CONNECT TO {self.type} ON THE NETWORK")
             return
         logger.info(f"Succesfully connected to {self.type} at {self.ip}")
+        with self.shared_state.peripheral_sbbot_status_lock:
+            self.shared_state.peripheral_sbbot_status = (
+                ns_shared.PeripheralStatus.CONNECTED
+            )
 
     def map_and_clamp(self, value, in_min, in_max, out_min, out_max):
         # 1. Constrain the input value to the input range

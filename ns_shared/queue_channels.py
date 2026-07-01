@@ -9,6 +9,7 @@ class QueueChannels:
     def __init__(self):
         self.kill_flag = threading.Event()
         self.vibrate_flag = threading.Event()
+        self.force_stop_phase_flag = threading.Event()
 
         self.turbo_drive_flag = threading.Event()
 

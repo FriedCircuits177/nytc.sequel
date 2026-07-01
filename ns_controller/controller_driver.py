@@ -4,7 +4,8 @@ import time
 
 import pygame
 
-from ns_shared import QueueChannels, SharedState
+import ns_shared
+from ns_shared import QueueChannels, SharedState, shared_state
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,10 @@ class PS4ControllerDriver:
 
     def init_controller(self) -> bool:
         """Attempts to discover and lock onto a connected PS4 controller."""
+        with self.shared_state.peripheral_controller_status_lock:
+            self.shared_state.peripheral_controller_status = (
+                ns_shared.PeripheralStatus.CONNECTING
+            )
         pygame.joystick.quit()
         pygame.joystick.init()
 
@@ -51,6 +56,10 @@ class PS4ControllerDriver:
         except Exception as e:
             logger.error(f"Failed to initialize joystick device: {e}")
             self.joystick = None
+            with self.shared_state.peripheral_controller_status_lock:
+                self.shared_state.peripheral_controller_status = (
+                    ns_shared.PeripheralStatus.DISCONNECTED
+                )
             return False
 
     def filter_deadzone(self, value: float) -> float:
@@ -86,10 +95,27 @@ class PS4ControllerDriver:
         """Dedicated loop pumping hardware events and publishing vectors to state."""
         while not self.queue_channels.kill_flag.is_set():
             # Connection loop if the hardware drops out
+            if self.queue_channels.peripheral_controller_command_queue.full():
+                if (
+                    self.queue_channels.peripheral_controller_command_queue.get()
+                    == ns_shared.PeripheralConnectionCommand.DISCONNECT
+                ):
+                    # gui asked for dc so we forcefully dc
+                    print("disconnecting")
+                    self.joystick = None
+                    with self.shared_state.peripheral_controller_status_lock:
+                        self.shared_state.peripheral_controller_status = (
+                            ns_shared.PeripheralStatus.DISCONNECTED
+                        )
             if not self.joystick:
                 if not self.init_controller():
                     time.sleep(2.0)
                     continue
+                # initialisation succesful
+                with self.shared_state.peripheral_controller_status_lock:
+                    self.shared_state.peripheral_controller_status = (
+                        ns_shared.PeripheralStatus.CONNECTED
+                    )
 
             try:
                 if self.queue_channels.vibrate_flag.is_set():
@@ -136,6 +162,10 @@ class PS4ControllerDriver:
                 self.joystick = (
                     None  # Resets state to force re-connection sequence next loop
                 )
+                with self.shared_state.peripheral_controller_status_lock:
+                    self.shared_state.peripheral_controller_status = (
+                        ns_shared.PeripheralStatus.DISCONNECTED
+                    )
 
             # Keep CPU happy: ~100Hz loop rate cuts thread cost down close to 0%
             time.sleep(0.01)
