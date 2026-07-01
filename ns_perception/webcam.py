@@ -22,26 +22,31 @@ class Webcam:
         self.camera_frame = camera_frame
         self.camera_frame_lock = camera_frame_lock
 
+        # 1. Force DirectShow backend
         self.capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        # 2. CRITICAL: Force the driver to use MJPEG decompression.
+        # This bypasses uncompressed format locking issues common in background threads.
+        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+
+        # 3. Apply resolution settings
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.capture.set(cv2.CAP_PROP_FPS, 30)
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         if not self.capture.isOpened():
             raise RuntimeError("Camera failed to open")
-        logger.info("Initialised succesfully")
-        # self.temp_counter = 0
+        logger.info("Initialised successfully via DirectShow MJPEG")
 
     def poll_camera_frame(self):
-        # self.temp_counter += 1
+        # FIX: Use integrated read() execution path instead of discrete grab/retrieve split
+        ret, frame = self.capture.read()
 
-        self.capture.grab()  # fast: just grab latest frame
-        ret, frame = self.capture.retrieve()
+        if not ret or frame is None:
+            return None
 
-        if not ret:
-            return
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return frame
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def put_camera_frame(self, frame):
         with self.camera_frame_lock:
@@ -53,8 +58,15 @@ class Webcam:
 
     def mainloop(self):
         while not self.queue_channels.kill_flag.is_set():
-            self.put_camera_frame(self.poll_camera_frame())
-            # time.sleep(0.001)
+            logger.info("webcam running")
+            frame = self.poll_camera_frame()
+
+            if frame is not None:
+                self.put_camera_frame(frame)
+
+            # Slightly longer yield window to allow driver resource swapping
+            # to occur smoothly between frames
+            time.sleep(0.01)
 
 
 class WebcamProcessor:
@@ -97,12 +109,13 @@ class WebcamProcessor:
         # Set solid alpha layer
         self.output[:, :, 3] = 1.0
 
-        return self.output.copy()
+        return self.output.ravel()
 
     def mainloop(self):
         last_frame_id = None
 
         while not self.queue_channels.kill_flag.is_set():
+            logging.info("webcam processor is running")
             with self.raw_camera_frame_lock:
                 if (
                     self.raw_camera_frame_lock
@@ -112,8 +125,9 @@ class WebcamProcessor:
                 else:
                     frame = self.raw_camera_frame
 
+            # If there is no frame data yet, wait for the capture thread
             if frame is None:
-                time.sleep(0.001)
+                time.sleep(0.005)
                 continue
 
             if id(frame) == last_frame_id:
@@ -121,10 +135,14 @@ class WebcamProcessor:
                 continue
 
             last_frame_id = id(frame)
-
             processed = self.process(frame)
 
-            with self.camera_frame_lock:
-                self.camera_frame = processed
-                if self.camera_frame_lock is self.shared_state.webcam_camera_frame_lock:
-                    self.shared_state.webcam_camera_frame = processed
+            # Only update the final output channel if processing succeeded
+            if processed is not None:
+                with self.camera_frame_lock:
+                    self.camera_frame = processed
+                    if (
+                        self.camera_frame_lock
+                        is self.shared_state.webcam_camera_frame_lock
+                    ):
+                        self.shared_state.webcam_camera_frame = processed

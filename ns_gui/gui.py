@@ -50,10 +50,13 @@ class WebcamWindow(BaseWindow):
             dpg.add_image(self.texture_tag, tag=self.image_tag)
 
     def update(self):
+        print("UPDATING")
         with self.gui.shared_state.webcam_camera_frame_lock:
             frame = self.gui.shared_state.webcam_camera_frame
         if frame is None:
+            print("FRAME IS NONE")
             return
+
         dpg.set_value(self.texture_tag, frame.ravel())
 
 
@@ -458,156 +461,253 @@ class PhaseTimeline(BaseWindow):
         return None
 
 
-class PeripheralWindow(BaseWindow):
-    def __init__(self, gui):
-        super().__init__(gui, "Peripheral Connections")
+# class PeripheralWindow(BaseWindow):
+#     def __init__(self, gui):
+#         super().__init__(gui, "Peripheral Connections")
 
-        # --- CONFIGURATION REGISTRY ---
-        # Explicitly maps each peripheral row to its own dedicated tracking variables and command queue.
-        self.peripherals_config = [
-            {
-                "name": f"Self-Balancing Bot ({ns_shared.SBBOT_NAME})",
-                "id": "sb_bot",
-                "state_attr": "peripheral_sbbot_status",  # Variable in SharedState
-                "lock_attr": "peripheral_sbbot_status_lock",  # Lock in SharedState
-                "queue_attr": "peripheral_sbbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
-            },
-            {
-                "name": f"Engineer Bot ({ns_shared.ENGBOT_NAME})",
-                "id": "eng_bot",
-                "state_attr": "peripheral_engbot_status",  # Variable in SharedState
-                "lock_attr": "peripheral_engbot_status_lock",  # Lock in SharedState
-                "queue_attr": "peripheral_engbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
-            },
-            {
-                "name": "Controller",
-                "id": "controller",
-                "state_attr": "peripheral_controller_status",  # Variable in SharedState
-                "lock_attr": "peripheral_controller_status_lock",  # Lock in SharedState
-                "queue_attr": "peripheral_controller_command_queue",  # Dedicated Queue attribute name in QueueChannels
-            },
-            # Pseudocode Example for future expansion:
-            # {
-            #     "name": "ENGBot Manipulator Arm",
-            #     "id": "eng_arm",
-            #     "state_attr": "eng_arm_alive",
-            #     "lock_attr": "eng_arm_lock",
-            #     "queue_attr": "eng_arm_command_queue"
-            # }
-        ]
+#         # --- CONFIGURATION REGISTRY ---
+#         # Explicitly maps each peripheral row to its own dedicated tracking variables and command queue.
+#         self.peripherals_config = [
+#             {
+#                 "name": f"Self-Balancing Bot ({ns_shared.SBBOT_NAME})",
+#                 "id": "sb_bot",
+#                 "state_attr": "peripheral_sbbot_status",  # Variable in SharedState
+#                 "lock_attr": "peripheral_sbbot_status_lock",  # Lock in SharedState
+#                 "queue_attr": "peripheral_sbbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
+#             },
+#             {
+#                 "name": f"Engineer Bot ({ns_shared.ENGBOT_NAME})",
+#                 "id": "eng_bot",
+#                 "state_attr": "peripheral_engbot_status",  # Variable in SharedState
+#                 "lock_attr": "peripheral_engbot_status_lock",  # Lock in SharedState
+#                 "queue_attr": "peripheral_engbot_command_queue",  # Dedicated Queue attribute name in QueueChannels
+#             },
+#             {
+#                 "name": "Controller",
+#                 "id": "controller",
+#                 "state_attr": "peripheral_controller_status",  # Variable in SharedState
+#                 "lock_attr": "peripheral_controller_status_lock",  # Lock in SharedState
+#                 "queue_attr": "peripheral_controller_command_queue",  # Dedicated Queue attribute name in QueueChannels
+#             },
+#             # Pseudocode Example for future expansion:
+#             # {
+#             #     "name": "ENGBot Manipulator Arm",
+#             #     "id": "eng_arm",
+#             #     "state_attr": "eng_arm_alive",
+#             #     "lock_attr": "eng_arm_lock",
+#             #     "queue_attr": "eng_arm_command_queue"
+#             # }
+#         ]
+
+#     def build(self):
+#         with dpg.window(
+#             label=self.title, width=550, height=300, no_collapse=True
+#         ) as self.window_tag:  # type: ignore
+#             # Using a table layout for pixel-perfect vertical column alignment
+#             with dpg.table(header_row=True, borders_innerH=True, borders_innerV=True):  # type: ignore
+#                 dpg.add_table_column(label="Device Name", width_stretch=True)
+#                 dpg.add_table_column(
+#                     label="Status", width_fixed=True, init_width_or_weight=130
+#                 )
+#                 dpg.add_table_column(
+#                     label="Action", width_fixed=True, init_width_or_weight=110
+#                 )
+
+#                 for item in self.peripherals_config:
+#                     device_id = item["id"]
+
+#                     with dpg.table_row():  # type: ignore
+#                         # Column 1: Device Descriptive Name
+#                         dpg.add_text(item["name"])
+
+#                         # Column 2: Status Text Label (Colored programmatically in update)
+#                         dpg.add_text("Unknown", tag=f"p_status_{device_id}")
+
+#                         # Column 3: Contextual Action Toggle Button
+#                         dpg.add_button(
+#                             label="Connect",
+#                             tag=f"p_btn_{device_id}",
+#                             callback=self._cb_toggle_connection,
+#                             user_data=item,  # Pass the specific row config directly to callback
+#                         )
+
+#     def update(self):
+#         """Polls SharedState variables safely and refreshes UI values dynamically."""
+#         for item in self.peripherals_config:
+#             device_id = item["id"]
+
+#             # 1. Dynamically retrieve the lock and variable reference from SharedState
+#             lock = getattr(self.gui.shared_state, item["lock_attr"], None)
+#             if lock is None:
+#                 continue
+
+#             with lock:
+#                 raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
+
+#             # 2. Normalize status if the backend uses a simple boolean value
+#             if isinstance(raw_status, bool):
+#                 if raw_status:
+#                     status_enum = ns_shared.PeripheralStatus.CONNECTED
+#                 else:
+#                     status_enum = ns_shared.PeripheralStatus.DISCONNECTED
+#             else:
+#                 status_enum = raw_status
+
+#             # 3. Map status state properties to textual UI elements and color weights
+#             if status_enum == ns_shared.PeripheralStatus.CONNECTED:
+#                 text_val = "Connected"
+#                 text_color = (50, 220, 100, 255)  # Vibrant Green
+#                 btn_label = "Disconnect"
+#             elif status_enum == ns_shared.PeripheralStatus.CONNECTING:
+#                 text_val = "Connecting..."
+#                 text_color = (255, 165, 0, 255)  # Orange
+#                 btn_label = "Disconnect"
+#             else:
+#                 text_val = "Disconnected"
+#                 text_color = (220, 50, 50, 255)  # Red
+#                 btn_label = "Connect"
+
+#             # 4. Push safe UI configuration mutations back directly to DearPyGUI layout elements
+#             status_tag = f"p_status_{device_id}"
+#             btn_tag = f"p_btn_{device_id}"
+
+#             if dpg.does_item_exist(status_tag):
+#                 dpg.set_value(status_tag, text_val)
+#                 dpg.configure_item(status_tag, color=text_color)
+
+#             if dpg.does_item_exist(btn_tag):
+#                 dpg.configure_item(btn_tag, label=btn_label)
+
+#     def _cb_toggle_connection(self, sender, app_data, user_data):
+#         """Universal dispatcher tracking current context state to flag backend actions."""
+#         item = user_data
+#         device_id = item["id"]
+
+#         # 1. Pull live state value to evaluate target action logic safely
+#         lock = getattr(self.gui.shared_state, item["lock_attr"])
+#         with lock:
+#             raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
+
+#         # 2. Evaluate current state to determine inverted command
+#         if (
+#             raw_status is True
+#             or raw_status == ns_shared.PeripheralStatus.CONNECTED
+#             or raw_status == ns_shared.PeripheralStatus.CONNECTING
+#         ):
+#             target_command = ns_shared.PeripheralConnectionCommand.DISCONNECT
+#         else:
+#             target_command = ns_shared.PeripheralConnectionCommand.CONNECT
+
+#         # 3. Dynamically resolve the dedicated queue for this individual backend device
+#         target_queue = getattr(self.gui.queue_channels, item["queue_attr"], None)
+
+#         if target_queue is not None:
+#             logger.info(
+#                 f"GUI Command Sent: Requesting {target_command.name} via queue '{item['queue_attr']}'"
+#             )
+#             # Put the explicit command directly into the target device's private channel
+#             target_queue.put({"command": target_command})
+#         else:
+#             logger.error(
+#                 f"Failed to dispatch command: Queue channel '{item['queue_attr']}' not found in QueueChannels!"
+#             )
+
+
+class RobotCameraCycleWindow(BaseWindow):
+    def __init__(self, gui, camera_configs: list[dict]):
+        """
+        Args:
+            gui: Main GUI instance reference.
+            camera_configs: List of configuration dictionaries. Format:
+                [
+                    {
+                        "caption": "SBBot Camera",
+                        "frame_attr_name": "sb_gui_camera_frame",
+                        "frame_lock": self.shared_state.sb_gui_camera_frame_lock
+                    },
+                    ...
+                ]
+        """
+        # Initialize with the first camera's caption as a default title
+        initial_title = (
+            camera_configs[0]["caption"] if camera_configs else "Camera Cycle"
+        )
+        super().__init__(gui, initial_title)
+
+        self.camera_configs = camera_configs
+        self.current_index = 0
+
+        # Use an instance ID unique tag to prevent DPG naming collisions
+        instance_id = id(self)
+        self.window_tag = f"cycle_window_{instance_id}"
+        self.texture_tag = f"cycle_texture_{instance_id}"
+        self.image_tag = f"cycle_image_{instance_id}"
+        self.handler_registry_tag = f"cycle_handlers_{instance_id}"
+
+        self.width = 640
+        self.height = 480
 
     def build(self):
+        if not self.camera_configs:
+            logger.error(
+                "RobotCameraCycleWindow: Initialized with an empty config list!"
+            )
+            return
+
+        # Setup dynamic texture registry matching standard sizing
+        with dpg.texture_registry():  # type: ignore
+            dpg.add_dynamic_texture(
+                width=self.width,
+                height=self.height,
+                default_value=[0.0] * (self.width * self.height * 4),
+                tag=self.texture_tag,
+            )
+
+        # Setup window using the dynamic label of the current camera index
         with dpg.window(
-            label=self.title, width=550, height=300, no_collapse=True
-        ) as self.window_tag:  # type: ignore
-            # Using a table layout for pixel-perfect vertical column alignment
-            with dpg.table(header_row=True, borders_innerH=True, borders_innerV=True):  # type: ignore
-                dpg.add_table_column(label="Device Name", width_stretch=True)
-                dpg.add_table_column(
-                    label="Status", width_fixed=True, init_width_or_weight=130
-                )
-                dpg.add_table_column(
-                    label="Action", width_fixed=True, init_width_or_weight=110
-                )
+            label=self.camera_configs[self.current_index]["caption"],
+            tag=self.window_tag,
+            width=self.width + 20,
+            height=self.height + 40,
+        ):  # type: ignore
+            dpg.add_image(self.texture_tag, tag=self.image_tag)
 
-                for item in self.peripherals_config:
-                    device_id = item["id"]
+        # Create and bind an item handler registry directly to the image feed item
+        with dpg.item_handler_registry(tag=self.handler_registry_tag):  # type: ignore
+            dpg.add_item_clicked_handler(callback=self._handle_feed_click)
+        dpg.bind_item_handler_registry(self.image_tag, self.handler_registry_tag)
 
-                    with dpg.table_row():  # type: ignore
-                        # Column 1: Device Descriptive Name
-                        dpg.add_text(item["name"])
+    def _handle_feed_click(self, sender, app_data):
+        # app_data structured as: [mouse_button, status]
+        mouse_button = app_data[0]
 
-                        # Column 2: Status Text Label (Colored programmatically in update)
-                        dpg.add_text("Unknown", tag=f"p_status_{device_id}")
+        if mouse_button == dpg.mvMouseButton_Left:
+            # Safely cycle index through your entire configurations array length
+            self.current_index = (self.current_index + 1) % len(self.camera_configs)
 
-                        # Column 3: Contextual Action Toggle Button
-                        dpg.add_button(
-                            label="Connect",
-                            tag=f"p_btn_{device_id}",
-                            callback=self._cb_toggle_connection,
-                            user_data=item,  # Pass the specific row config directly to callback
-                        )
+            # Mutate window caption property live without changing the absolute target tags
+            new_config = self.camera_configs[self.current_index]
+            dpg.configure_item(self.window_tag, label=new_config["caption"])
+
+            logger.info(f"Camera window cycled to view: {new_config['caption']}")
 
     def update(self):
-        """Polls SharedState variables safely and refreshes UI values dynamically."""
-        for item in self.peripherals_config:
-            device_id = item["id"]
+        if not self.camera_configs:
+            return
 
-            # 1. Dynamically retrieve the lock and variable reference from SharedState
-            lock = getattr(self.gui.shared_state, item["lock_attr"], None)
-            if lock is None:
-                continue
+        # Fetch active target properties based on cycle pointers
+        current_config = self.camera_configs[self.current_index]
+        lock = current_config["frame_lock"]
+        attr_name = current_config["frame_attr_name"]
 
-            with lock:
-                raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
-
-            # 2. Normalize status if the backend uses a simple boolean value
-            if isinstance(raw_status, bool):
-                if raw_status:
-                    status_enum = ns_shared.PeripheralStatus.CONNECTED
-                else:
-                    status_enum = ns_shared.PeripheralStatus.DISCONNECTED
-            else:
-                status_enum = raw_status
-
-            # 3. Map status state properties to textual UI elements and color weights
-            if status_enum == ns_shared.PeripheralStatus.CONNECTED:
-                text_val = "Connected"
-                text_color = (50, 220, 100, 255)  # Vibrant Green
-                btn_label = "Disconnect"
-            elif status_enum == ns_shared.PeripheralStatus.CONNECTING:
-                text_val = "Connecting..."
-                text_color = (255, 165, 0, 255)  # Orange
-                btn_label = "Disconnect"
-            else:
-                text_val = "Disconnected"
-                text_color = (220, 50, 50, 255)  # Red
-                btn_label = "Connect"
-
-            # 4. Push safe UI configuration mutations back directly to DearPyGUI layout elements
-            status_tag = f"p_status_{device_id}"
-            btn_tag = f"p_btn_{device_id}"
-
-            if dpg.does_item_exist(status_tag):
-                dpg.set_value(status_tag, text_val)
-                dpg.configure_item(status_tag, color=text_color)
-
-            if dpg.does_item_exist(btn_tag):
-                dpg.configure_item(btn_tag, label=btn_label)
-
-    def _cb_toggle_connection(self, sender, app_data, user_data):
-        """Universal dispatcher tracking current context state to flag backend actions."""
-        item = user_data
-        device_id = item["id"]
-
-        # 1. Pull live state value to evaluate target action logic safely
-        lock = getattr(self.gui.shared_state, item["lock_attr"])
+        # Resource-safe lock acquisition mirroring previous thread structures
         with lock:
-            raw_status = getattr(self.gui.shared_state, item["state_attr"], False)
+            frame = getattr(self.gui.shared_state, attr_name, None)
 
-        # 2. Evaluate current state to determine inverted command
-        if (
-            raw_status is True
-            or raw_status == ns_shared.PeripheralStatus.CONNECTED
-            or raw_status == ns_shared.PeripheralStatus.CONNECTING
-        ):
-            target_command = ns_shared.PeripheralConnectionCommand.DISCONNECT
-        else:
-            target_command = ns_shared.PeripheralConnectionCommand.CONNECT
+        if frame is None:
+            return
 
-        # 3. Dynamically resolve the dedicated queue for this individual backend device
-        target_queue = getattr(self.gui.queue_channels, item["queue_attr"], None)
-
-        if target_queue is not None:
-            logger.info(
-                f"GUI Command Sent: Requesting {target_command.name} via queue '{item['queue_attr']}'"
-            )
-            # Put the explicit command directly into the target device's private channel
-            target_queue.put({"command": target_command})
-        else:
-            logger.error(
-                f"Failed to dispatch command: Queue channel '{item['queue_attr']}' not found in QueueChannels!"
-            )
+        dpg.set_value(self.texture_tag, frame.ravel())
 
 
 class GUI:
@@ -626,30 +726,77 @@ class GUI:
                 dpg.bind_font(default_font)
             except Exception:
                 pass
-
+        camera_rotation_setup = [
+            {
+                "caption": "SBBot Camera",
+                "frame_attr_name": "sb_gui_camera_frame",
+                "frame_lock": self.shared_state.sb_gui_camera_frame_lock,
+            },
+            {
+                "caption": "ENGBot Camera",
+                "frame_attr_name": "eng_gui_camera_frame",
+                "frame_lock": self.shared_state.eng_gui_camera_frame_lock,
+            },
+            # You can append unlimited dictionaries here dynamically later!
+        ]
         # Initializing the distinct windows using our dynamic references
         self.windows.append(WebcamWindow(self))
 
-        self.windows.append(
-            RobotCameraWindow(
-                gui=self,
-                title="SBBot Camera",
-                frame_attr_name="sb_gui_camera_frame",
-                frame_lock=self.shared_state.sb_gui_camera_frame_lock,
-            )
-        )
+        # self.windows.append(
+        #     RobotCameraWindow(
+        #         gui=self,
+        #         title="SBBot Camera",
+        #         frame_attr_name="sb_gui_camera_frame",
+        #         frame_lock=self.shared_state.sb_gui_camera_frame_lock,
+        #     )
+        # )
 
-        self.windows.append(
-            RobotCameraWindow(
-                gui=self,
-                title="ENGBot Camera",
-                frame_attr_name="eng_gui_camera_frame",
-                frame_lock=self.shared_state.eng_gui_camera_frame_lock,
-            )
-        )
+        # self.windows.append(
+        #     RobotCameraWindow(
+        #         gui=self,
+        #         title="ENGBot Camera",
+        #         frame_attr_name="eng_gui_camera_frame",
+        #         frame_lock=self.shared_state.eng_gui_camera_frame_lock,
+        #     )
+        # )
+        class SaveLayoutWindow(BaseWindow):
+            def __init__(self, gui):
+                super().__init__(gui, "Layout Manager")
+                self.window_tag = "temporary_layout_window"
+
+            def build(self):
+                # Prevent the window from being saved to the .ini file itself,
+                # and configure it as a small, clean utility window.
+                with dpg.window(
+                    label=self.title,
+                    tag=self.window_tag,
+                    width=200,
+                    height=80,
+                    no_resize=True,
+                    no_saved_settings=True,  # <--- Crucial line!
+                ):  # type: ignore
+                    dpg.add_button(
+                        label="Save Current Layout",
+                        callback=self._cb_save_layout,
+                        width=-1,  # Fill the window width horizontally
+                        height=-1,  # Fill the window height vertically
+                    )
+
+            def _cb_save_layout(self, sender, app_data):
+                try:
+                    # Serializes the active layout states into dpg_default_layout.ini
+                    dpg.save_init_file("dpg_default_layout.ini")
+                    logger.info(
+                        "GUI layout successfully serialized to 'dpg_default_layout.ini'"
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to save layout settings: {e}")
 
         self.windows.append(PhaseTimeline(self))
-        # self.windows.append(PeripheralWindow(self))
+        self.windows.append(
+            RobotCameraCycleWindow(self, camera_configs=camera_rotation_setup)
+        )
+        # self.windows.append(SaveLayoutWindow(self))
         for window in self.windows:
             window.build()
 
@@ -661,6 +808,7 @@ class GUI:
             x_pos=0,
             y_pos=0,
         )
+        dpg.configure_app(init_file="dpg_default_layout.ini")
         dpg.setup_dearpygui()
         dpg.show_viewport()
         dpg.maximize_viewport()

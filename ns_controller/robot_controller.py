@@ -1,7 +1,6 @@
 import logging
 import time
 
-import pygame  # for controller
 from numpy.testing import print_assert_equal
 
 import ns_robot
@@ -33,22 +32,22 @@ class RobotController:
         self.async_setup_engbot()
         self.async_setup_sbbot()
 
-    def _check(self):
-        """Checks if the frontend requested a stop.
-        If true, throws the exception to instantly drop out of the phase."""
-        if (
-            self.queue_channels.kill_flag.is_set()
-            or self.queue_channels.force_stop_phase_flag.is_set()
-        ):
-            self.queue_channels.force_stop_phase_flag.clear()
-            raise PhaseAbortedException("Phase execution interrupted by user request.")
+    # def _check(self):
+    #     """Checks if the frontend requested a stop.
+    #     If true, throws the exception to instantly drop out of the phase."""
+    #     if (
+    #         self.queue_channels.kill_flag.is_set()
+    #         or self.queue_channels.force_stop_phase_flag.is_set()
+    #     ):
+    #         self.queue_channels.force_stop_phase_flag.clear()
+    #         raise PhaseAbortedException("Phase execution interrupted by user request.")
 
-    def _sleep(self, seconds: float):
-        """A cancel-aware sleep helper so time.sleep doesn't lock up cancellations."""
-        start_time = time.time()
-        while time.time() - start_time < seconds:
-            self._check()
-            time.sleep(0.05)
+    # def _sleep(self, seconds: float):
+    #     """A cancel-aware sleep helper so time.sleep doesn't lock up cancellations."""
+    #     start_time = time.time()
+    #     while time.time() - start_time < seconds:
+    #         self._check()
+    #         time.sleep(0.05)
 
     def async_setup_engbot(self):
         _ = ns_shared.construct_thread(self.setup_engbot)
@@ -98,8 +97,6 @@ class RobotController:
                     current_phase = self.sharedState.phase_state.phase_queue[
                         current_idx
                     ]
-
-                self._check()
 
                 match current_phase:
                     case ns_shared.Phase.Phase1:
@@ -199,15 +196,14 @@ class RobotController:
         self.opcontrol()
         self.advance_phase()
 
-
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""
         if joystick_control:
             self.queue_channels.vibrate_flag.set()
         self.zoom = False
         while not self.queue_channels.kill_flag.is_set():
-            #print("OPCONTROL IS ALIVE")
-            #self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
+            # print("OPCONTROL IS ALIVE")
+            # self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
             self.max_zoom_rpm = 360
@@ -219,7 +215,12 @@ class RobotController:
                 r2 = self.sharedState.drive_r2
 
             if r2 > 0.4 and not self.zoom:
-                self.engbot._sdk.mecanum_motor_control(self.max_zoom_rpm,self.max_zoom_rpm,self.max_zoom_rpm,self.max_zoom_rpm)
+                self.engbot._sdk.mecanum_motor_control(
+                    self.max_zoom_rpm,
+                    self.max_zoom_rpm,
+                    self.max_zoom_rpm,
+                    self.max_zoom_rpm,
+                )
                 self.zoom = True
                 continue
             elif r2 > 0.4 and self.zoom:
@@ -227,8 +228,6 @@ class RobotController:
                 continue
             elif r2 < 0.4 and self.zoom:
                 self.zoom = False
-
-
 
             if buttons["cross"]:
                 break
