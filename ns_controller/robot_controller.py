@@ -4,7 +4,6 @@ import time
 import pygame  # for controller
 from numpy.testing import print_assert_equal
 
-# from ugot import ugot
 import ns_robot
 import ns_shared
 from ns_shared.exceptions import PhaseAbortedException
@@ -20,75 +19,83 @@ class RobotController:
         QueueChannels: ns_shared.QueueChannels,
         SharedState: ns_shared.SharedState,
     ):
-
         self.queue_channels = QueueChannels
         self.sharedState = SharedState
         self.engbot = engbot
         self.sbbot = sbbot
 
-        threads = [
-            ns_shared.construct_thread(self.phase_alive_checker, daemon=True),
-        ]
-        for _ in threads:
-            _.start()
+        self.async_setup_engbot()
+        self.async_setup_sbbot()
 
-        if not ns_shared.DEBUG_MODE:
-            self.async_setup_engbot()
-            self.async_setup_sbbot()
-
-    def phase_alive_checker(self):
-        while not self.queue_channels.kill_flag.is_set():
-            self.queue_channels.force_stop_phase_flag.wait()
-            # now that is not set, raise the exception once
-            try:
-                raise ns_shared.PhaseAbortedException
-            except ns_shared.PhaseAbortedException:
-                logging.info("Current phase aborted/ended!")
+    def _check(self):
+        """Checks if the frontend requested a stop.
+        If true, throws the exception to instantly drop out of the phase."""
+        if (
+            self.queue_channels.kill_flag.is_set()
+            or self.queue_channels.force_stop_phase_flag.is_set()
+        ):
             self.queue_channels.force_stop_phase_flag.clear()
-            with self.sharedState.phase_state.lock:
-                self.sharedState.phase_state.is_running.clear()
+            raise PhaseAbortedException("Phase execution interrupted by user request.")
+
+    def _sleep(self, seconds: float):
+        """A cancel-aware sleep helper so time.sleep doesn't lock up cancellations."""
+        start_time = time.time()
+        while time.time() - start_time < seconds:
+            self._check()
+            time.sleep(0.05)
 
     def async_setup_engbot(self):
         _ = ns_shared.construct_thread(self.setup_engbot)
         _.start()
 
     def setup_engbot(self):
-        logger.info("Attempting to connect ENGBot...")
-        self.engbot.connect()
-        # put shi here
-        logger.info("Loading ENGBot models...")
-        self.engbot._sdk.load_models(
-            [
-                "color_recognition",  # detects dominant colors
-                "word_recognition",  # OCR: reads printed text
-                "line_recognition",  # for line-following tasks
-                "face_recognition",  # identifies registered faces by name
-                "apriltag_qrcode",  # AprilTag recognition
-            ]
-        )
-        # end
+        try:
+            logger.info("Attempting to connect ENGBot...")
+            self.engbot.connect()
+            logger.info("Loading ENGBot models...")
+            self.engbot._sdk.load_models(
+                [
+                    "color_recognition",
+                    "word_recognition",
+                    "line_recognition",
+                    "face_recognition",
+                    "apriltag_qrcode",
+                ]
+            )
+        except Exception as e:
+            logger.error(f"ENGBot initialization failed: {e}. Running offline.")
 
     def async_setup_sbbot(self):
         _ = ns_shared.construct_thread(self.setup_sbbot)
         _.start()
 
     def setup_sbbot(self):
-        logger.info("Attempting to connect SBBot...")
-        self.sbbot.connect()
+        try:
+            logger.info("Attempting to connect SBBot...")
+            self.sbbot.connect()
+        except Exception as e:
+            logger.error(f"SBBot initialization failed: {e}. Running offline.")
 
     def mainloop(self):
-        """
-        The main purpose of this slave mainloop is to listen to the process_manager mainloop,
-        be a good boy, and just be easily killable by process_manager."""
-
-        # start the checker thread!
-
+        """Listens to the process_manager and executes ordered autonomous sequences."""
         while not self.queue_channels.kill_flag.is_set():
-            self.sharedState.phase_state.is_running.wait()  # this will freeze the thread until it is running
-            try:  # we use try except here because the stop button will
-                match self.sharedState.phase_state.phase_queue[
-                    self.sharedState.phase_state.current_phase_index
-                ]:
+            self.sharedState.phase_state.is_running.wait()
+
+            try:
+                with self.sharedState.phase_state.lock:
+                    current_idx = self.sharedState.phase_state.current_phase_index
+                    if current_idx is None or current_idx >= len(
+                        self.sharedState.phase_state.phase_queue
+                    ):
+                        self.sharedState.phase_state.is_running.clear()
+                        continue
+                    current_phase = self.sharedState.phase_state.phase_queue[
+                        current_idx
+                    ]
+
+                self._check()
+
+                match current_phase:
                     case ns_shared.Phase.Phase1:
                         self.phase1()
                     case ns_shared.Phase.Phase2:
@@ -103,42 +110,32 @@ class RobotController:
                         self.phase4a()
                     case _:
                         logger.error(
-                            f"The phase {
-                                self.sharedState.phase_state.phase_queue[
-                                    self.sharedState.phase_state.current_phase_index
-                                ]
-                            } does not have a corresponding function tied to it in robot_controller!"
+                            f"The phase {current_phase} has no function tied to it!"
                         )
-                        self.advance_phase()  # to make sure nothing softlocks
-            except ns_shared.PhaseAbortedException:
-                logger.warning("Aborting current phase")
+                        self.advance_phase()
+
+            except PhaseAbortedException as e:
+                logger.warning(f"Abort Signal Caught: {e}")
                 self.kill_bots()
+
+                with self.sharedState.phase_state.lock:
+                    self.sharedState.phase_state.is_running.clear()
+                    self.sharedState.phase_state.current_phase_index = None
                 continue
+
             except Exception as e:
-                logger.exception(e)
+                logger.exception(f"Unexpected crash inside Main Loop: {e}")
+                self.kill_bots()
 
-        # try and kill bots
-        if not ns_shared.DEBUG_MODE:
-            self.kill_bots()
-
-        # for _ in threads:
-        #     _.join()
-        # dont bother killing the thread because it's a daemon
-        # now it shld die
-
-    # def test(self):
-    #     self.engbot._sdk.mecanum_motor_control(360, 360, 360, 360)
-    #     # time.sleep(2)
-    #     self.engbot._sdk.mecanum_move_speed_times(0, 80, 2, 0)
-    #     self.engbot._sdk.mecanum_stop()
-    #     time.sleep(10)
+        self.kill_bots()
 
     def kill_bots(self):
+        """Safely stops all hardware components if they are connected."""
         try:
             self.sbbot._sdk.balance_stop_balancing()
         except Exception as e:
             if (
-                self.sharedState.peripheral_sbbot_status
+                getattr(self.sharedState, "peripheral_sbbot_status", None)
                 == ns_shared.PeripheralStatus.CONNECTED
             ):
                 logger.exception(e)
@@ -147,11 +144,13 @@ class RobotController:
             self.engbot._sdk.mecanum_stop()
         except Exception as e:
             if (
-                self.sharedState.peripheral_engbot_status
+                getattr(self.sharedState, "peripheral_engbot_status", None)
                 == ns_shared.PeripheralStatus.CONNECTED
             ):
                 logger.exception(e)
                 logger.warning("FAILED TO STOP ENGBOT, WARNING!")
+
+    # --- REVERTED ORIGINAL PHASE METHODS ---
 
     def phase1(self):
         """sbb moves to april tag"""
@@ -165,17 +164,11 @@ class RobotController:
         got.face_recognition_add_name("Bad Guy")
         # Call red ball pickup code
         # stop at line
-        # find villian at pos 1,2,3
+        # find villain at pos 1,2,3
         # align and throw at pos 1,2,3
 
         time.sleep(1)
         self.advance_phase()
-
-    # with self.gui.shared_state.webcam_camera_frame_lock:
-    #   frame = self.gui.shared_state.webcam_camera_frame
-    # sharedState
-    # shared_state
-    # SharedState
 
     def phase2a(self):
         # call opcontrol portion
@@ -200,6 +193,7 @@ class RobotController:
         if joystick_control:
             self.queue_channels.vibrate_flag.set()
         while not self.queue_channels.kill_flag.is_set():
+            self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
             with self.sharedState.drive_command_lock:
@@ -308,10 +302,4 @@ class RobotController:
                 )
 
                 # Cache historical state
-                last_x = x_movement
-                last_y = y_movement
-                last_r = r_movement
-                last_send_time = current_time
-
-            # Keep your thread execution cycle polite to the CPU
-            time.sleep(0.01)
+                last_x = x_
