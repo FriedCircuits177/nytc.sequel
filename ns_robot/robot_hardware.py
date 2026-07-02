@@ -202,7 +202,9 @@ class RobotHardware:
                 # --- CRITICAL FIX: FORCE EXPLICIT FLOAT CASTING ---
                 # --- SNAPSHOT STABILIZATION ---
                 try:
-                    current_dist = float(AP_info[0][6]) # Lock a local snapshot copy right here
+                    current_dist = float(
+                        AP_info[0][6]
+                    )  # Lock a local snapshot copy right here
                     target_dist = float(distance)
                 except Exception as e:
                     logging.error(f"Snapshot tracking failed: {e}")
@@ -210,7 +212,9 @@ class RobotHardware:
                     continue
 
                 # Precise diagnostic logging
-                logging.info(f"Checking Condition: Is {current_dist} <= {target_dist}? Result: {current_dist <= target_dist}")
+                logging.info(
+                    f"Checking Condition: Is {current_dist} <= {target_dist}? Result: {current_dist <= target_dist}"
+                )
 
                 if current_dist <= target_dist:
                     logging.info("!!! CRITICAL: INSIDE THE IF BLOCK RIGHT NOW !!!")
@@ -234,11 +238,8 @@ class RobotHardware:
         except Exception as e:
             logging.error(f"SBB_AP loop crashed completely: {e}")
 
-        # This logs the exact millisecond the function officially finishes execution
+            # This logs the exact millisecond the function officially finishes execution
         logging.info(f"=== FUNCTION EXITED FULLY AT {time.time()} ===")
-
-        except Exception as e:
-            logging.error(f"SBB_AP loop crashed completely: {e}")
 
     def SBB_charge_and_stop(self):
         self._sdk.balance_move_speed_times(0, 80, 100, 1)
@@ -269,6 +270,59 @@ class RobotHardware:
         logging.info("Registering villian...")
         self._sdk.face_recognition_add_name("Bad Guy")
         logging.info("Villian registered.")
+
+    def eng_ball_centralise_and_pick(
+        self,
+        max_speed=40,
+        strafe_speed=25,
+        threshold=0.1,
+        arm_down_distance=0.5,
+        pick_distance=0.1,
+    ):
+        arm_down = False
+        picked = False
+        # pick_confirm = False
+        # original_y = -1
+        while not self.queue_channels.kill_flag.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
+                break
+            with self.shared_state.ball_detection_data_lock:
+                data = self.shared_state.ball_detection_data
+
+            if not data:
+                if not picked:
+                    logging.warning("no red ball data")
+                    time.sleep(0.02)
+                    continue
+                else:
+                    # excellent, the ball is picked up and out of sight
+                    break
+
+            x_error = data["x_error"]
+            normalized_x = data["normalized_x"]
+            distance = data["distance"]
+            y = data["y"]
+
+            if distance < pick_distance and arm_down:
+                # original_y = y
+                self._sdk.mechanical_clamp_close()
+                self._sdk.mechanical_joint_control(0, 110, 90, 2000)
+                self._sdk.mecanum_move_xyz(0, 0.5 * max_speed, 0)
+                picked = True
+            elif distance < arm_down_distance and not arm_down:
+                self._sdk.mecanum_move_xyz(0, 0.5 * max_speed, 0)
+                self._sdk.mechanical_clamp_release()
+                self._sdk.mechanical_joint_control(0, -20, 70, 1000)
+                arm_down = True
+            elif x_error > (1 + threshold):
+                # thatmeans it's to the right
+                self._sdk.mecanum_move_xyz(-strafe_speed, max_speed, 0)
+            elif x_error < (1 - threshold):
+                # that means it's to the left i guess
+                self._sdk.mecanum_move_xyz(strafe_speed, max_speed, 0)
+            elif (1 - threshold) < x_error and (1 + threshold) > x_error:
+                # within acceptable centre, so go forward
+                self._sdk.mecanum_move_xyz(0, max_speed, 0)
 
     def red_ball_pickup(self):
         """Detect the red ball and drive toward it; pick it up when close enough.

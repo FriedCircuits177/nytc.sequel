@@ -171,15 +171,18 @@ class RobotController:
 
     def phase2(self):
         # Call red ball pickup code
-        self.engbot.red_ball_pickup()
-        # find villain
-        self.engbot.search_villain()
-        # align and throw at pos 1,2,3
-        self.engbot.beat_up()
+        # self.engbot.red_ball_pickup()
+        # # find villain
+        # self.engbot.search_villain()
+        # # align and throw at pos 1,2,3
+        # self.engbot.beat_up()
+        self.queue_channels.ball_detection_active_flag.set()
+        self.engbot.eng_ball_centralise_and_pick()
+
+        # temp
+        self.engbot._sdk.mecanum_stop()
 
         logger.info("P2 done")
-
-        time.sleep(1)
         self.advance_phase()
 
     def phase2a(self):

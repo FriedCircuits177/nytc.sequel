@@ -64,6 +64,12 @@ class SharedState:
             "d_right": False,
         }
 
+        self.ball_detection_data = {}
+        self.ball_detection_data_lock = threading.Lock()
+
+        self.block_detection_data = {}
+        self.block_detection_data_lock = threading.Lock()
+
         # gui <-> backend peripheral command stuff
         self.peripheral_sbbot_status = PeripheralStatus.DISCONNECTED
         self.peripheral_sbbot_status_lock = threading.Lock()

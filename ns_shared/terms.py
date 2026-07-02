@@ -39,7 +39,7 @@ class RobotModel(Enum):
 
 
 class BlockColour(Enum):
-    """Class storing upper and lower bounds of block colours (Phase 4)"""
+    """Class storing upper and lower bounds of block colours (Phase 2,4)"""
 
     RED = ((0, 120, 70), (10, 255, 255))
     BLUE = ((100, 150, 50), (140, 255, 255))  # Example blue bounds
