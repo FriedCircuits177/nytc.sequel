@@ -1,7 +1,8 @@
-import cv2
-import numpy as np
 import logging
 import queue
+
+import cv2
+import numpy as np
 
 import ns_shared
 
@@ -105,6 +106,7 @@ class BlockDetector:
     def mainloop(self):
         """Continuously running tracking loop bound to the process kill flag."""
         while not self.queue_channels.kill_flag.is_set():
+            self.queue_channels.block_detection_active_flag.wait()
             frame = self.get_latest_frame()
             blocks_data = self.process_frame(frame)
             self.update_data_queue(blocks_data)

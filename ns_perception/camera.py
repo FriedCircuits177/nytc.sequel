@@ -74,10 +74,12 @@ class Camera:
                 self.robot._sdk.open_camera()
                 break
             except Exception as e:
-                # logging.error(e)
+                logging.error(e)
                 continue
+
         while not self.queue_channels.kill_flag.is_set():
             self.active_flag.wait()
+            # logging.info("I AM RUNNING AND MY NAME IS A CAMERA")
             b64_data = self.readEncodedFrame()
             if b64_data:
                 bgr_frame = self.b64_to_bgr_turbo(b64_data)

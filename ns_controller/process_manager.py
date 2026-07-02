@@ -78,7 +78,7 @@ class ProcessManager:
             SharedState,
         )
         self.ps4_driver = ns_controller.PS4ControllerDriver(QueueChannels, SharedState)
-        # self.pose_recog = ns_perception.MediaPipePoseRecog(QueueChannels, SharedState)
+        self.pose_recog = ns_perception.MediaPipePoseRecog(QueueChannels, SharedState)
         if ns_shared.DEBUG_MODE:
             self.threads = [
                 ns_shared.construct_thread(self.robot_controller.mainloop),
@@ -102,7 +102,7 @@ class ProcessManager:
                 ns_shared.construct_thread(self.webcam_processor.mainloop),
                 ns_shared.construct_thread(self.block_detection.mainloop),
                 ns_shared.construct_thread(self.ps4_driver.mainloop),
-                # ns_shared.construct_thread(self.pose_recog.mainloop),
+                ns_shared.construct_thread(self.pose_recog.mainloop),
             ]
 
         for _ in self.threads:

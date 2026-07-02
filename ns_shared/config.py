@@ -9,10 +9,10 @@ DEFAULT_TIMELINE_CONFIG = [
     Phase.Phase4A,
 ]
 
-SBBOT_NAME = "UGOT_XXXA"
+SBBOT_NAME = "UGOT_9499"
 ENGBOT_NAME = "UGOT_B052"
 SBBOT_IP = "192.168.137.238"
 ENGBOT_IP = "192.168.137.41"
 TURBOJPEG_PATH = "C:/libjpeg-turbo-gcc64/bin/libturbojpeg.dll"
-MEDIAPIPE_MODEL_PATH = "assets/pose_landmarker_lite.task"
+MEDIAPIPE_MODEL_PATH = "pose_landmarker_lite.task"
 DEBUG_MODE = False  # True if testing in no-bot mode

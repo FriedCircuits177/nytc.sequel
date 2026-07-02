@@ -92,16 +92,18 @@ class MediaPipePoseRecog:
             while not self.queue_channels.kill_flag.is_set():
                 frame = None
                 self.queue_channels.pose_recog_active_flag.wait()
+                # logger.info("RUNNING POSE RECOG (I THINK)")
                 # 3. Thread-safe frame extraction
-                with self.shared_state.eng_camera_frame_lock:
-                    if self.shared_state.eng_camera_frame is not None:
+                with self.shared_state.raw_webcam_camera_frame_lock:
+                    if self.shared_state.raw_webcam_camera_frame is not None:
                         # Make a shallow or deep copy depending on your framework's design
-                        frame = self.shared_state.eng_camera_frame.copy()
+                        frame = self.shared_state.raw_webcam_camera_frame.copy()
 
                 if frame is None:
                     time.sleep(
                         0.01
                     )  # Avoid burning CPU cycles if the camera is lagging
+                    logger.info("BUT THE FRAME IS NONE")
                     continue
 
                 try:
@@ -119,6 +121,7 @@ class MediaPipePoseRecog:
                     # Assuming shared_state properties require basic locking or direct modification
                     self.shared_state.drive_y = self.latest_drive_y
                     self.shared_state.drive_r = self.latest_drive_r
+                    logger.info("NO IT WAS ALL GOOD I THINK")
 
                 except Exception as e:
                     logger.error(f"Error in main loop iteration: {e}")

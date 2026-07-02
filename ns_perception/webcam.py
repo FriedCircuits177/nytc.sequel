@@ -58,7 +58,7 @@ class Webcam:
 
     def mainloop(self):
         while not self.queue_channels.kill_flag.is_set():
-            logger.info("webcam running")
+            # logger.info("webcam running")
             frame = self.poll_camera_frame()
 
             if frame is not None:
@@ -115,7 +115,7 @@ class WebcamProcessor:
         last_frame_id = None
 
         while not self.queue_channels.kill_flag.is_set():
-            logging.info("webcam processor is running")
+            # logging.info("webcam processor is running")
             with self.raw_camera_frame_lock:
                 if (
                     self.raw_camera_frame_lock

@@ -50,7 +50,7 @@ class WebcamWindow(BaseWindow):
             dpg.add_image(self.texture_tag, tag=self.image_tag)
 
     def update(self):
-        print("UPDATING")
+        # print("UPDATING")
         with self.gui.shared_state.webcam_camera_frame_lock:
             frame = self.gui.shared_state.webcam_camera_frame
         if frame is None:
@@ -705,30 +705,60 @@ class RobotCameraCycleWindow(BaseWindow):
 
     def _sync_camera_thread_states(self):
         """Iterates through camera configurations and flips the threading.Event states."""
+        if not hasattr(self.gui, "queue_channels") or self.gui.queue_channels is None:
+            logger.warning(
+                "RobotCameraCycleWindow: queue_channels not initialized yet. Skipping sync."
+            )
+            return
+
         for idx, config in enumerate(self.camera_configs):
             attr_name = config.get("active_attr_name")
             if attr_name:
                 # Retrieve the event object from queue_channels safely
                 event = getattr(self.gui.queue_channels, attr_name, None)
 
-                if event:
-                    if idx == self.current_index:
-                        event.set()  # Resume thread execution
-                    else:
-                        event.clear()  # Pause thread execution
+                if event is None:
+                    # This log will catch if your front-end is building too fast for your backend
+                    logger.error(
+                        f"RobotCameraCycleWindow: Threading Event '{attr_name}' NOT found in queue_channels!"
+                    )
+                    continue
+
+                if idx == self.current_index:
+                    event.set()  # Automatically unblocks index 0 on startup
+                    logger.info(
+                        f"Set threading flag active for: {config['caption']} ({attr_name})"
+                    )
+                else:
+                    event.clear()  # Ensure all other cameras are paused
+                    logger.info(
+                        f"Cleared threading flag for: {config['caption']} ({attr_name})"
+                    )
 
     def update(self):
         if not self.camera_configs:
             return
 
-        # Fetch active target properties based on cycle pointers
         current_config = self.camera_configs[self.current_index]
+
+        # --- STARTUP FALLBACK CHECK ---
+        # If the backend event was missed during build(), force activate it here
+        attr_name = current_config.get("active_attr_name")
+        if attr_name and hasattr(self.gui, "queue_channels"):
+            event = getattr(self.gui.queue_channels, attr_name, None)
+            if event and not event.is_set():
+                logger.info(
+                    f"Fallback activation triggered for {current_config['caption']}"
+                )
+                self._sync_camera_thread_states()
+        # ------------------------------
+
         lock = current_config["frame_lock"]
-        attr_name = current_config["frame_attr_name"]
+        frame_attr = current_config["frame_attr_name"]
 
         # Resource-safe lock acquisition mirroring previous thread structures
         with lock:
-            frame = getattr(self.gui.shared_state, attr_name, None)
+            frame = getattr(self.gui.shared_state, frame_attr, None)
 
         if frame is None:
             return
