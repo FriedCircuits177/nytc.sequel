@@ -35,8 +35,14 @@ class SharedState:
         # self.current_phase_lock = threading.Lock()
         # self.current_phase = None
 
-        self.pose_draw_data_lock = threading.Lock()
-        self.pose_draw_data = []
+        self.webcam_draw_data_lock = threading.Lock()
+        self.webcam_draw_data = []
+
+        self.sbbot_draw_data_lock = threading.Lock()
+        self.sbbot_draw_data = []
+
+        self.engbot_draw_data_lock = threading.Lock()
+        self.engbot_draw_data = []
 
         self.phase_state = PhaseState(DEFAULT_TIMELINE_CONFIG)
 

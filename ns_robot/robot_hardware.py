@@ -111,49 +111,134 @@ class RobotHardware:
         return (front_left, front_right, back_left, back_right)
 
     def SBB_AP_centralization_approaching(
-        self, distance=0.15, gap=20, fwd_spd=10, turn_spd=5
+        self, distance=0.7, gap=20, fwd_spd=5, turn_spd=5
     ):
         """
         Drive toward a detected AprilTag, keeping it centered in the camera frame.
-
-        Parameters:
-            distance  (float): Stop when the tag is within this many meters (default 0.15 m).
-            gap       (int):   Pixel tolerance around center (320 px) before strafing (default 20 px).
-            fwd_spd   (int):   Forward drive speed percentage (default 10 cm/s).
-            strafe_spd(int):   Left/right correction speed percentage (default 10 cm/s).
         """
+        logging.info("SBB_AP_centralization_approaching: started the run!")
         try:
-            # Get an initial reading to confirm a tag is visible before entering the loop.
-            AP_info = self._sdk.get_apriltag_total_info()
-            AP_x = AP_info[0][1]
-            # Horizontal pixel position of the tag (0=left, 640=right)
-            AP_distance = AP_info[0][6]  # Estimated distance to the tag in meters
-            logger.info(f"AP_x: {AP_x}, AP_distance: {AP_distance}")
+            while not self.queue_channels.kill_flag.is_set():
+                if not self.shared_state.phase_state.is_running.is_set():
+                    break
 
-            while True:
-                # Refresh tag data every iteration for responsive corrections.
-                AP_info = self._sdk.get_apriltag_total_info()
-                AP_x = AP_info[0][1]
-                AP_distance = AP_info[0][6]
+                ui_primitives = []
 
-                if AP_x < 320 - gap:
-                    # Tag is to the LEFT of center — strafe left to re-align.
-                    # mecanum_move_xyz(x, y, z): x=strafe, y=forward, z=rotation
+                try:
+                    AP_info = self._sdk.get_apriltag_total_info().copy()
+                    AP_x = AP_info[0][1]
+                    AP_y = AP_info[0][2]
+                    AP_height = AP_info[0][3]
+                    AP_width = AP_info[0][4]
+                    AP_distance = AP_info[0][6]
+
+                    # --- 1. POPULATE ACTIVE VISUALS ---
+                    half_w_norm = (AP_width / 2.0) / 640.0
+                    half_h_norm = (AP_height / 2.0) / 480.0
+                    center_x_norm = AP_x / 640.0
+                    center_y_norm = AP_y / 480.0
+
+                    ui_primitives.append(
+                        {
+                            "type": "rectangle",
+                            "corners": [
+                                (
+                                    center_x_norm - half_w_norm,
+                                    center_y_norm - half_h_norm,
+                                ),
+                                (
+                                    center_x_norm + half_w_norm,
+                                    center_y_norm - half_h_norm,
+                                ),
+                                (
+                                    center_x_norm + half_w_norm,
+                                    center_y_norm + half_h_norm,
+                                ),
+                                (
+                                    center_x_norm - half_w_norm,
+                                    center_y_norm + half_h_norm,
+                                ),
+                            ],
+                            "color": (255, 0, 255),
+                            "thickness": 2,
+                        }
+                    )
+
+                    ui_primitives.append(
+                        {
+                            "type": "text",
+                            "position": (0.05, 0.08),
+                            "text": f"({int(AP_x)}, {round(float(AP_distance), 2)}m)",
+                            "color": (0, 255, 0),
+                            "scale": 0.6,
+                            "thickness": 1,
+                        }
+                    )
+
+                except IndexError:
+                    logging.error("No AprilTag detected bleh")
+                    ui_primitives.append(
+                        {
+                            "type": "text",
+                            "position": (0.05, 0.08),
+                            "text": "No AprilTag",
+                            "color": (0, 0, 255),
+                            "scale": 0.6,
+                            "thickness": 1,
+                        }
+                    )
+                    with self.shared_state.sbbot_draw_data_lock:
+                        self.shared_state.sbbot_draw_data = ui_primitives
+                    time.sleep(0.02)
+                    continue
+                except Exception as e:
+                    logging.error(f"Inner processing error: {e}")
+                    time.sleep(0.02)
+                    continue
+
+                with self.shared_state.sbbot_draw_data_lock:
+                    self.shared_state.sbbot_draw_data = ui_primitives
+
+                # --- CRITICAL FIX: FORCE EXPLICIT FLOAT CASTING ---
+                # --- SNAPSHOT STABILIZATION ---
+                try:
+                    current_dist = float(AP_info[0][6]) # Lock a local snapshot copy right here
+                    target_dist = float(distance)
+                except Exception as e:
+                    logging.error(f"Snapshot tracking failed: {e}")
+                    time.sleep(0.02)
+                    continue
+
+                # Precise diagnostic logging
+                logging.info(f"Checking Condition: Is {current_dist} <= {target_dist}? Result: {current_dist <= target_dist}")
+
+                if current_dist <= target_dist:
+                    logging.info("!!! CRITICAL: INSIDE THE IF BLOCK RIGHT NOW !!!")
+
+                    self._sdk.balance_stop_balancing()
+                    self._sdk.screen_display_background(6)
+
+                    with self.shared_state.sbbot_draw_data_lock:
+                        self.shared_state.sbbot_draw_data = []
+
+                    logging.info("!!! EXECUTING BREAK STATEMENT NOW !!!")
+                    break  # This WILL kill this specific while loop.
+
+                elif AP_x < 320 - gap:
                     self._sdk.balance_move_turn(0, fwd_spd, 2, turn_spd)
                 elif AP_x > 320 + gap:
-                    # Tag is to the RIGHT of center — strafe right to re-align.
                     self._sdk.balance_move_turn(0, fwd_spd, 3, turn_spd)
-                elif AP_distance > distance:
-                    # Tag is centered but still too far — drive straight forward.
+                elif current_dist > target_dist:
                     self._sdk.balance_move_speed(0, fwd_spd)
-                else:
-                    # Tag is centered AND within target distance — stop and exit.
-                    self._sdk.balance_move_speed(0, 0)
-                    logging.info("It's too close, let's stop.")
-                    self._sdk.screen_display_background(6)
-                    break
-        except IndexError:
-            logging.error("ERROR: AprilTag cannot be seen.")
+
+        except Exception as e:
+            logging.error(f"SBB_AP loop crashed completely: {e}")
+
+        # This logs the exact millisecond the function officially finishes execution
+        logging.info(f"=== FUNCTION EXITED FULLY AT {time.time()} ===")
+
+        except Exception as e:
+            logging.error(f"SBB_AP loop crashed completely: {e}")
 
     def SBB_charge_and_stop(self):
         self._sdk.balance_move_speed_times(0, 80, 100, 1)

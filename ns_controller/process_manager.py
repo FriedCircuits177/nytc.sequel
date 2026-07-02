@@ -14,8 +14,8 @@ class ProcessManager:
         self,
         SBBot: ns_robot.RobotHardware,
         ENGBot: ns_robot.RobotHardware,
-        QueueChannels,
-        SharedState,
+        QueueChannels: ns_shared.QueueChannels,
+        SharedState: ns_shared.SharedState,
     ):
         self.SBBot = SBBot
         self.ENGBot = ENGBot
@@ -40,6 +40,8 @@ class ProcessManager:
             SharedState.sb_gui_camera_frame,
             SharedState.sb_gui_camera_frame_lock,
             QueueChannels.sbbot_camera_active_flag,
+            SharedState.sbbot_draw_data,
+            SharedState.sbbot_draw_data_lock,
         )
         self.engbot_camera = ns_perception.Camera(
             self.ENGBot,
@@ -57,6 +59,8 @@ class ProcessManager:
             SharedState.eng_gui_camera_frame,
             SharedState.eng_gui_camera_frame_lock,
             QueueChannels.engbot_camera_active_flag,
+            SharedState.engbot_draw_data,
+            SharedState.engbot_draw_data_lock,
         )
         self.webcam = ns_perception.Webcam(
             QueueChannels,

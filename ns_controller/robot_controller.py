@@ -81,6 +81,9 @@ class RobotController:
             self.sbbot.connect()
         except Exception as e:
             logger.error(f"SBBot initialization failed: {e}. Running offline.")
+        self.sbbot._sdk.balance_start_balancing()
+        self.sbbot._sdk.balance_set_acceleration(0.5)
+        self.sbbot._sdk.load_models(["apriltag_qrcode"])
 
     def mainloop(self):
         """Listens to the process_manager and executes ordered autonomous sequences."""
@@ -161,7 +164,7 @@ class RobotController:
         self.sbbot.SBB_AP_centralization_approaching(
             distance=0.15, gap=20, fwd_spd=20, turn_spd=5
         )
-        self.sbbot.SBB_charge_and_stop()
+        # self.sbbot.SBB_charge_and_stop()
         self.advance_phase()
         # success so we return True
         return True
@@ -204,7 +207,7 @@ class RobotController:
         logging.info("opcontrol pose started")
         self.queue_channels.pose_recog_active_flag.set()
         self.max_speed = 40  # cm/s
-        self.max_rotation_speed = 180
+        self.max_rotation_speed = 120
 
         # Ensure the queue starts clean
         while not self.queue_channels.pose_drive.empty():

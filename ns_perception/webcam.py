@@ -100,55 +100,91 @@ class WebcamProcessor:
         if frame is None:
             return None
 
-        # 1. Enforce sizing constraints and copy source matrix
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
         else:
             frame = frame.copy()
 
-        # 2. Fetch the rendering primitives under lock safely
         draw_items = []
         if hasattr(self.shared_state, "pose_draw_data"):
-            with self.shared_state.pose_draw_data_lock:
-                draw_items = list(self.shared_state.pose_draw_data)
+            with self.shared_state.webcam_draw_data_lock:
+                draw_items = list(self.shared_state.webcam_draw_data)
 
-        # 3. Iterate through queue instructions to render types dynamically
+        # --- UNIFIED DRAWING LAYER SYSTEM ---
         for item in draw_items:
-            item_type = item.get(
-                "type", "circle"
-            )  # Default to circle if type is missing
+            item_type = item.get("type", "circle")
+            color = item.get("color", (0, 255, 0))
+            thickness = item.get("thickness", 2)
 
             if item_type == "rectangle":
-                # Extract and scale normalized locations to pixel arrays
-                tl_x, tl_y = item["top_left"]
-                br_x, br_y = item["bottom_right"]
+                if "top_left" in item and "bottom_right" in item:
+                    tl_x, tl_y = item["top_left"]
+                    br_x, br_y = item["bottom_right"]
+                    p1 = (int(tl_x * self.width), int(tl_y * self.height))
+                    p2 = (int(br_x * self.width), int(br_y * self.height))
+                elif "corners" in item:
+                    corners = item["corners"]
+                    p1 = (
+                        int(corners[0][0] * self.width),
+                        int(corners[0][1] * self.height),
+                    )
+                    p2 = (
+                        int(corners[2][0] * self.width),
+                        int(corners[2][1] * self.height),
+                    )
+                else:
+                    continue
 
-                # Clip limits safely inside image resolution bounds
-                p1 = (int(tl_x * self.width), max(0, int(tl_y * self.height)))
-                p2 = (int(br_x * self.width), min(self.height, int(br_y * self.height)))
-
-                # Create a temporary copy layer to apply alpha transparency weight blends
-                overlay = frame.copy()
-                cv2.rectangle(overlay, p1, p2, color=item["color"], thickness=-1)
-
-                # Apply 50% blend layout handoff
-                alpha = item.get("alpha", 0.5)
-                cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
+                if "alpha" in item:
+                    overlay = frame.copy()
+                    cv2.rectangle(
+                        overlay,
+                        p1,
+                        p2,
+                        color,
+                        thickness=-1 if thickness == -1 else thickness,
+                    )
+                    alpha = item["alpha"]
+                    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
+                else:
+                    cv2.rectangle(frame, p1, p2, color, thickness)
 
             elif item_type == "circle":
                 norm_x, norm_y = item["center"]
                 pixel_x = int(norm_x * self.width)
                 pixel_y = int(norm_y * self.height)
+                radius = item.get("radius", 6)
+                cv2.circle(frame, (pixel_x, pixel_y), radius, color, thickness)
 
-                cv2.circle(
+            elif item_type == "text":
+                norm_x, norm_y = item["position"]
+                pixel_x = int(norm_x * self.width)
+                pixel_y = int(norm_y * self.height)
+                text_str = item.get("text", "")
+                font_scale = item.get("scale", 0.5)
+
+                cv2.putText(
                     frame,
+                    text_str,
                     (pixel_x, pixel_y),
-                    radius=item["radius"],
-                    color=item["color"],
-                    thickness=item.get("thickness", -1),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    (0, 0, 0),
+                    thickness + 2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
+                    text_str,
+                    (pixel_x, pixel_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    color,
+                    thickness,
+                    cv2.LINE_AA,
                 )
 
-        # 4. Transcribe values onto float32 canvas array normalized for DPG
+        # Webcams already run natively in standard contiguous configurations
         float_frame = frame.astype(np.float32)
         np.divide(float_frame, 255.0, out=self.output[:, :, :3])
         self.output[:, :, 3] = 1.0

@@ -102,6 +102,8 @@ class CameraGUIProcessor:
         gui_camera_frame,
         gui_camera_frame_lock,
         active_flag,
+        draw_data_list,  # Directly passed list reference from shared state
+        draw_data_lock,  # Directly passed explicit lock object
     ):
         self.queue_channels = queue_channels
         self.shared_state = shared_state
@@ -110,6 +112,11 @@ class CameraGUIProcessor:
         self.gui_camera_frame = gui_camera_frame
         self.gui_camera_frame_lock = gui_camera_frame_lock
         self.active_flag = active_flag
+
+        # Injected drawing dependencies
+        self.draw_data_list = draw_data_list
+        self.draw_data_lock = draw_data_lock
+
         # DearPyGUI standard viewport resolution configuration
         self.width = 640
         self.height = 480
@@ -122,14 +129,91 @@ class CameraGUIProcessor:
         # Ensure correct texture sizing
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
+        else:
+            frame = frame.copy()
 
-        # Convert robot BGR to RGB (let OpenCV allocate a temporary contiguous array)
+        # --- UNIFIED DRAWING LAYER SYSTEM ---
+        # Safely copy the items using the injected lock instance
+        with self.draw_data_lock:
+            draw_items = list(self.draw_data_list)
+
+        for item in draw_items:
+            item_type = item.get("type", "circle")
+            color = item.get("color", (0, 255, 0))
+            thickness = item.get("thickness", 2)
+
+            if item_type == "rectangle":
+                if "top_left" in item and "bottom_right" in item:
+                    tl_x, tl_y = item["top_left"]
+                    br_x, br_y = item["bottom_right"]
+                    p1 = (int(tl_x * self.width), int(tl_y * self.height))
+                    p2 = (int(br_x * self.width), int(br_y * self.height))
+                elif "corners" in item:
+                    corners = item["corners"]
+                    p1 = (
+                        int(corners[0][0] * self.width),
+                        int(corners[0][1] * self.height),
+                    )
+                    p2 = (
+                        int(corners[2][0] * self.width),
+                        int(corners[2][1] * self.height),
+                    )
+                else:
+                    continue
+
+                if "alpha" in item:
+                    overlay = frame.copy()
+                    cv2.rectangle(
+                        overlay,
+                        p1,
+                        p2,
+                        color,
+                        thickness=-1 if thickness == -1 else thickness,
+                    )
+                    alpha = item["alpha"]
+                    cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
+                else:
+                    cv2.rectangle(frame, p1, p2, color, thickness)
+
+            elif item_type == "circle":
+                norm_x, norm_y = item["center"]
+                pixel_x = int(norm_x * self.width)
+                pixel_y = int(norm_y * self.height)
+                radius = item.get("radius", 6)
+                cv2.circle(frame, (pixel_x, pixel_y), radius, color, thickness)
+
+            elif item_type == "text":
+                norm_x, norm_y = item["position"]
+                pixel_x = int(norm_x * self.width)
+                pixel_y = int(norm_y * self.height)
+                text_str = item.get("text", "")
+                font_scale = item.get("scale", 0.5)
+
+                # Render drop shadow border then the main text overlay
+                cv2.putText(
+                    frame,
+                    text_str,
+                    (pixel_x, pixel_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    (0, 0, 0),
+                    thickness + 2,
+                    cv2.LINE_AA,
+                )
+                cv2.putText(
+                    frame,
+                    text_str,
+                    (pixel_x, pixel_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_scale,
+                    color,
+                    thickness,
+                    cv2.LINE_AA,
+                )
+
+        # Convert robot BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-        # Now safely divide directly into our pre-allocated float32 slice
         np.divide(rgb_frame, 255.0, out=self.output[:, :, :3])
-
-        # Set solid alpha layer
         self.output[:, :, 3] = 1.0
 
         return self.output.copy()
@@ -140,7 +224,6 @@ class CameraGUIProcessor:
         logger.info("Camera GUI conversion processing loop started.")
 
         while not self.queue_channels.kill_flag.is_set():
-            # Safely fetch the latest raw frame depending on the assigned lock
             self.active_flag.wait()
             with self.raw_camera_frame_lock:
                 if self.raw_camera_frame_lock is self.shared_state.sb_camera_frame_lock:
@@ -157,7 +240,6 @@ class CameraGUIProcessor:
                 time.sleep(0.001)
                 continue
 
-            # Skip execution if the frame object hasn't rotated yet
             if id(frame) == last_frame_id:
                 time.sleep(0.001)
                 continue
@@ -168,7 +250,6 @@ class CameraGUIProcessor:
             if processed_gui_frame is not None:
                 with self.gui_camera_frame_lock:
                     self.gui_camera_frame = processed_gui_frame
-                    # Update global shared state based on matching lock target
                     if (
                         self.gui_camera_frame_lock
                         is self.shared_state.sb_gui_camera_frame_lock

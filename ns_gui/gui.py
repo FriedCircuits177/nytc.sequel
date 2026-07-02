@@ -885,7 +885,7 @@ class GUI:
             frames += 1
 
             if time.time() - last > 1:
-                print("GUI FPS:", frames)
+                # print("GUI FPS:", frames)
                 frames = 0
                 last = time.time()
 
