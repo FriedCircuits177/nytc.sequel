@@ -1,3 +1,5 @@
+"""thanksharshal :)"""
+
 import logging
 import time
 
@@ -11,7 +13,7 @@ import ns_shared
 
 logger = logging.getLogger(__name__)
 
-model_path = "assets/pose_landmarker_lite.task"
+model_path = ns_shared.MEDIAPIPE_MODEL_PATH
 
 
 class MediaPipePoseRecog:
@@ -89,7 +91,7 @@ class MediaPipePoseRecog:
 
             while not self.queue_channels.kill_flag.is_set():
                 frame = None
-
+                self.queue_channels.pose_recog_active_flag.wait()
                 # 3. Thread-safe frame extraction
                 with self.shared_state.eng_camera_frame_lock:
                     if self.shared_state.eng_camera_frame is not None:

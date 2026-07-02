@@ -184,7 +184,7 @@ class RobotController:
         self.advance_phase()
 
     def phase3(self):
-        time.sleep(1)
+        self.opcontrol_pose()
         self.advance_phase()
 
     def phase4(self):
@@ -195,6 +195,15 @@ class RobotController:
         # call opcontrol portion
         self.opcontrol()
         self.advance_phase()
+
+    def you_can_crush_it_as_dry_as_a_bone(self):
+        logging.info("you can kiss it you can break all the rules")
+
+    def opcontrol_pose(self):
+        self.queue_channels.pose_recog_active_flag.set()
+        while not self.queue_channels.kill_flag.is_set():
+            pass
+        self.queue_channels.pose_recog_active_flag.clear()
 
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""
