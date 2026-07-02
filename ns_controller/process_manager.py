@@ -81,20 +81,25 @@ class ProcessManager:
             QueueChannels,
             SharedState,
         )
+        self.ball_detection = ns_perception.BallDetector(
+            QueueChannels,
+            SharedState,
+        )
         self.ps4_driver = ns_controller.PS4ControllerDriver(QueueChannels, SharedState)
         self.pose_recog = ns_perception.MediaPipePoseRecog(QueueChannels, SharedState)
         if ns_shared.DEBUG_MODE:
-            self.threads = [
-                ns_shared.construct_thread(self.robot_controller.mainloop),
-                # ns_shared.construct_thread(self.sbbot_camera.mainloop),
-                # ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
-                # ns_shared.construct_thread(self.engbot_camera.mainloop),
-                # ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
-                ns_shared.construct_thread(self.webcam.mainloop),
-                ns_shared.construct_thread(self.webcam_processor.mainloop),
-                ns_shared.construct_thread(self.block_detection.mainloop),
-                ns_shared.construct_thread(self.ps4_driver.mainloop),
-            ]
+            # self.threads = [
+            #     ns_shared.construct_thread(self.robot_controller.mainloop),
+            #     # ns_shared.construct_thread(self.sbbot_camera.mainloop),
+            #     # ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
+            #     # ns_shared.construct_thread(self.engbot_camera.mainloop),
+            #     # ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
+            #     ns_shared.construct_thread(self.webcam.mainloop),
+            #     ns_shared.construct_thread(self.webcam_processor.mainloop),
+            #     ns_shared.construct_thread(self.block_detection.mainloop),
+            #     ns_shared.construct_thread(self.ps4_driver.mainloop),
+            # ]
+            logging.error("Debug mode is deprecated!")
         else:
             self.threads = [
                 ns_shared.construct_thread(self.robot_controller.mainloop),
@@ -107,6 +112,7 @@ class ProcessManager:
                 ns_shared.construct_thread(self.block_detection.mainloop),
                 ns_shared.construct_thread(self.ps4_driver.mainloop),
                 ns_shared.construct_thread(self.pose_recog.mainloop),
+                ns_shared.construct_thread(self.ball_detection.mainloop),
             ]
 
         for _ in self.threads:

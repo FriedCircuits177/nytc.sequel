@@ -18,13 +18,15 @@ class QueueChannels:
         self.engbot_camera_active_flag = threading.Event()
 
         self.block_detection_active_flag = threading.Event()
+        self.ball_detection_active_flag = threading.Event()
 
         # self.gui_start_flag = threading.Event()
         # self.gui_stop_flag = threading.Event()
         # self.gui_left_flag = threading.Event()
         # self.gui_right_flag = threading.Event()
 
-        self.block_detection_data = queue.Queue(1)
+        # self.block_detection_data = queue.Queue(1)
+        # self.ball_detection_data = queue.Queue(1)
         self.pose_drive = queue.Queue(1)
 
         # these 3 handle disconnect/connect commands

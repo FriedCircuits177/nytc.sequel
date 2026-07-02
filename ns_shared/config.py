@@ -15,4 +15,7 @@ SBBOT_IP = "192.168.137.238"
 ENGBOT_IP = "192.168.137.205"
 TURBOJPEG_PATH = "C:/libjpeg-turbo-gcc64/bin/libturbojpeg.dll"
 MEDIAPIPE_MODEL_PATH = "pose_landmarker_full.task"
+
+CAMERA_FOCAL_LENGTH = 500  # tune ts please please please
+
 DEBUG_MODE = False  # True if testing in no-bot mode
