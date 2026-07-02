@@ -25,6 +25,7 @@ class QueueChannels:
         # self.gui_right_flag = threading.Event()
 
         self.block_detection_data = queue.Queue(1)
+        self.pose_drive = queue.Queue(1)
 
         # these 3 handle disconnect/connect commands
         # self.peripheral_sbbot_command_queue = queue.Queue(1)

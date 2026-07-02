@@ -1,4 +1,5 @@
 import logging
+import queue
 import time
 
 from numpy.testing import print_assert_equal
@@ -202,37 +203,44 @@ class RobotController:
     def opcontrol_pose(self):
         logging.info("opcontrol pose started")
         self.queue_channels.pose_recog_active_flag.set()
-        self.max_speed = 80  # cm/s dumb sdk lol
-        self.max_rotation_speed = 280
+        self.max_speed = 40  # cm/s
+        self.max_rotation_speed = 180
+
+        # Ensure the queue starts clean
+        while not self.queue_channels.pose_drive.empty():
+            try:
+                self.queue_channels.pose_drive.get_nowait()
+            except Exception:
+                break
+
         while not self.queue_channels.kill_flag.is_set():
             if not self.sharedState.phase_state.is_running.is_set():
-                # logging.info("bye")
                 break
-            with self.sharedState.drive_command_lock:
-                x_movement = self.sharedState.drive_x
-                y_movement = self.sharedState.drive_y
-                r_movement = self.sharedState.drive_r
-            print(
-                f"{self.sharedState.drive_x},{self.sharedState.drive_y},{self.sharedState.drive_r}"
-            )
+
+            try:
+                # BLOCK HERE until MediaPipe produces a new calculated data payload
+                # Use a small timeout so the loop can cleanly exit if the kill flag gets set
+                x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            print(f"{x_val},{y_val},{r_val}")
+
+            # Convert float vectors into native target SDK integers
             x_movement = int(
-                self.engbot.map_and_clamp(
-                    x_movement, -1, 1, -self.max_speed, self.max_speed
-                )
+                self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed)
             )
             y_movement = int(
-                self.engbot.map_and_clamp(
-                    y_movement, -1, 1, -self.max_speed, self.max_speed
-                )
+                self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed)
             )
             r_movement = int(
                 self.engbot.map_and_clamp(
-                    r_movement, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                    r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
                 )
             )
 
             self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
-            time.sleep(0.02)
+
         self.engbot._sdk.mecanum_stop()
         self.queue_channels.pose_recog_active_flag.clear()
 

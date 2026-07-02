@@ -1,6 +1,7 @@
 """thanksharshal :)"""
 
 import logging
+import queue
 import time
 
 import cv2
@@ -23,18 +24,11 @@ class MediaPipePoseRecog:
         self.queue_channels = QueueChannels
         self.shared_state = SharedState
 
-        # Store temporary outputs from the async callback
-        self.latest_drive_y = 0.0
-        self.latest_drive_r = 0.0
+        # Deadzone threshold
+        self.DEADZONE = 0.1
 
-        # --- TELEMETRY SMOOTHING & DEADZONE CONFIG ---
-        self.lost_frame_count = 0
-        self.MAX_LOST_FRAMES = 5  # Bridges ~150ms of micro-drops without dropping to 0
-
-        # Deadzone threshold in normalized coordinate units (Y-axis distance)
-        self.DEADZONE = (
-            0.05  # Hands must be at least this far above/below shoulders to drive
-        )
+        # Keep track of state to avoid spamming zero tuples endlessly
+        self.sent_zero_last = False
 
     def _result_callback(
         self,
@@ -44,18 +38,15 @@ class MediaPipePoseRecog:
     ):
         """Asynchronous callback function where MediaPipe delivers the pose landmarks."""
         if not result or not result.pose_landmarks:
-            self.lost_frame_count += 1
+            if not self.sent_zero_last:
+                self._push_to_robot_queue(0.0, 0.0, 0.0)
+                self.sent_zero_last = True
 
-            # Only zero-out the motors if tracking has been completely lost over multiple frames
-            if self.lost_frame_count > self.MAX_LOST_FRAMES:
-                with self.shared_state.drive_command_lock:
-                    self.shared_state.drive_y = 0.0
-                    self.shared_state.drive_r = 0.0
-                with self.shared_state.pose_draw_data_lock:
-                    self.shared_state.pose_draw_data = []
+            with self.shared_state.pose_draw_data_lock:
+                self.shared_state.pose_draw_data = []
             return
 
-        # Valid frame received, reset our tracking drop counter
+        # Valid tracking frame received
         self.lost_frame_count = 0
         landmarks = result.pose_landmarks[0]
 
@@ -65,63 +56,92 @@ class MediaPipePoseRecog:
             l_wrist = landmarks[15]
             r_wrist = landmarks[16]
 
-            # 1. Calculate relative arm extensions (Positive = Raised, Negative = Dropped)
+            # 1. Calculate relative extensions
             left_hand_up = l_shoulder.y - l_wrist.y
             right_hand_up = r_shoulder.y - r_wrist.y
 
-            # 2. Evaluate deadzone status (Are the hands moved far enough from neutral shoulder height?)
+            # 2. Evaluate deadzones
             l_active = abs(left_hand_up) > self.DEADZONE
             r_active = abs(right_hand_up) > self.DEADZONE
 
-            # Filter inputs based on deadzone evaluations
-            left_final = left_hand_up if l_active else 0.0
-            right_final = right_hand_up if r_active else 0.0
+            # 3. Handle data routing conditions
+            if not l_active and not r_active:
+                if not self.sent_zero_last:
+                    self._push_to_robot_queue(0.0, 0.0, 0.0)
+                    self.sent_zero_last = True
+            else:
+                scale = 1.0 / 0.35
+                drive_y = ((left_hand_up + right_hand_up) / 2.0) * scale
+                drive_r = (right_hand_up - left_hand_up) * scale
 
-            # 3. Scale factor and analog drive mix
-            scale = 1.0 / 0.35
-            drive_y = ((left_final + right_final) / 2.0) * scale
-            drive_r = (right_final - left_final) * scale
+                final_y = max(-1.0, min(1.0, drive_y))
+                final_r = max(-1.0, min(1.0, drive_r))
 
-            # 4. Safe bound clipping and direct assignment to global telemetry channels
-            with self.shared_state.drive_command_lock:
-                self.shared_state.drive_y = max(-1.0, min(1.0, drive_y))
-                self.shared_state.drive_r = max(-1.0, min(1.0, drive_r))
+                self._push_to_robot_queue(0.0, final_y, final_r)
+                self.sent_zero_last = False
 
-            # --- DYNAMIC GUI COLOR CODE FEEDBACK ---
-            COLOR_ACTIVE = (0, 255, 0)  # Bright Green: Actively driving motors
-            COLOR_DEADZONE = (
-                255,
-                140,
-                0,
-            )  # Amber/Orange: Tracked but idling in deadzone
-            COLOR_ANCHOR = (0, 255, 255)  # Cyan: Static shoulder reference joints
+            # 4. Compute the mid-point of the shoulders to establish the deadzone center line
+            avg_shoulder_y = (l_shoulder.y + r_shoulder.y) / 2.0
 
-            new_draw_data = [
+            # Formulate the top and bottom bounds of the deadzone corridor
+            deadzone_top = avg_shoulder_y - self.DEADZONE
+            deadzone_bottom = avg_shoulder_y + self.DEADZONE
+
+            # Define Theme Primitives
+            COLOR_ACTIVE = (0, 255, 0)  # Bright Green
+            COLOR_DEADZONE = (255, 140, 0)  # Amber/Orange
+            COLOR_ANCHOR = (0, 255, 255)  # Cyan
+            COLOR_BAND = (60, 60, 60)  # Sleek Dark Gray Band for the deadzone overlay
+
+            # Initialize rendering queue array
+            new_draw_data = []
+
+            # --- ADD DEADZONE BAND TARGET PRIMITIVE ---
+            # Normalized values spanning completely across the screen width (X: 0.0 to 1.0)
+            new_draw_data.append(
+                {
+                    "type": "rectangle",
+                    "top_left": (0.0, deadzone_top),
+                    "bottom_right": (1.0, deadzone_bottom),
+                    "color": COLOR_BAND,
+                    "alpha": 0.50,  # 50% opacity target request
+                }
+            )
+
+            # --- ADD JOINT INDICATORS ---
+            tracked_points = [
                 {
                     "center": (l_shoulder.x, l_shoulder.y),
                     "color": COLOR_ANCHOR,
                     "radius": 5,
-                    "thickness": -1,
                 },
                 {
                     "center": (r_shoulder.x, r_shoulder.y),
                     "color": COLOR_ANCHOR,
                     "radius": 5,
-                    "thickness": -1,
                 },
                 {
                     "center": (l_wrist.x, l_wrist.y),
                     "color": COLOR_ACTIVE if l_active else COLOR_DEADZONE,
                     "radius": 8,
-                    "thickness": -1,
                 },
                 {
                     "center": (r_wrist.x, r_wrist.y),
                     "color": COLOR_ACTIVE if r_active else COLOR_DEADZONE,
                     "radius": 8,
-                    "thickness": -1,
                 },
             ]
+
+            for pt in tracked_points:
+                new_draw_data.append(
+                    {
+                        "type": "circle",
+                        "center": pt["center"],
+                        "color": pt["color"],
+                        "radius": pt["radius"],
+                        "thickness": -1,
+                    }
+                )
 
             with self.shared_state.pose_draw_data_lock:
                 self.shared_state.pose_draw_data = new_draw_data
@@ -129,8 +149,21 @@ class MediaPipePoseRecog:
         except Exception as e:
             logger.error(f"Error extracting landmarks: {e}")
 
+    def _push_to_robot_queue(self, x, y, r):
+        """Pushes data onto the thread-safe queue cleanly without blocking the main stream thread."""
+        try:
+            # Clear old frame if robot fell slightly behind to prevent lag buildup
+            while True:
+                self.queue_channels.pose_drive.get_nowait()
+        except queue.Empty:
+            pass
+
+        try:
+            self.queue_channels.pose_drive.put_nowait((x, y, r))
+        except queue.Full:
+            pass
+
     def mainloop(self):
-        # 1. Set up options with the Async Callback
         base_options = python.BaseOptions(model_asset_path=model_path)
         options = vision.PoseLandmarkerOptions(
             base_options=base_options,
@@ -138,43 +171,31 @@ class MediaPipePoseRecog:
             result_callback=self._result_callback,
         )
 
-        # 2. Initialize the detector OUTSIDE the loop for speed
         with vision.PoseLandmarker.create_from_options(options) as detector:
             logger.info("MediaPipe Pose Landmarker successfully initialized.")
 
             while not self.queue_channels.kill_flag.is_set():
                 frame = None
                 self.queue_channels.pose_recog_active_flag.wait()
-                # logger.info("RUNNING POSE RECOG (I THINK)")
-                # 3. Thread-safe frame extraction
+
                 with self.shared_state.raw_webcam_camera_frame_lock:
                     if self.shared_state.raw_webcam_camera_frame is not None:
-                        # Make a shallow or deep copy depending on your framework's design
                         frame = self.shared_state.raw_webcam_camera_frame.copy()
 
                 if frame is None:
-                    time.sleep(
-                        0.01
-                    )  # Avoid burning CPU cycles if the camera is lagging
-                    logger.info("BUT THE FRAME IS NONE")
+                    time.sleep(0.01)
                     continue
 
                 try:
-                    # 4. Process frame (Convert BGR to RGB)
                     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                     mp_image = mp.Image(
                         image_format=mp.ImageFormat.SRGB, data=rgb_frame
                     )
 
-                    # 5. Send frame to the async tracker with a unique millisecond timestamp
                     timestamp_ms = int(time.time() * 1000)
                     detector.detect_async(mp_image, timestamp_ms)
-
-                    # 6. Cleaned: Handled asynchronously by the callback now!
-                    # (Removed self.shared_state.drive_y assignments from here)
 
                 except Exception as e:
                     logger.error(f"Error in main loop iteration: {e}")
 
-                # Cap execution speed roughly to match standard camera framerates (e.g., ~30 FPS)
                 time.sleep(0.03)

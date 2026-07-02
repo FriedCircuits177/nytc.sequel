@@ -100,40 +100,57 @@ class WebcamProcessor:
         if frame is None:
             return None
 
-        # 1. Enforce sizing and copy matrix to prevent corrupting the source capture stream
+        # 1. Enforce sizing constraints and copy source matrix
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
         else:
             frame = frame.copy()
 
-        # 2. Fetch the latest tracking primitives safely under lock
+        # 2. Fetch the rendering primitives under lock safely
         draw_items = []
         if hasattr(self.shared_state, "pose_draw_data"):
             with self.shared_state.pose_draw_data_lock:
-                # Quick shallow copy of the tracking structure array
                 draw_items = list(self.shared_state.pose_draw_data)
 
-        # 3. Draw tracking dots across the frame using your pre-converted RGB array
+        # 3. Iterate through queue instructions to render types dynamically
         for item in draw_items:
-            # Denormalize normalized (0.0 -> 1.0) values back into absolute image dimensions
-            norm_x, norm_y = item["center"]
-            pixel_x = int(norm_x * self.width)
-            pixel_y = int(norm_y * self.height)
+            item_type = item.get(
+                "type", "circle"
+            )  # Default to circle if type is missing
 
-            # Draw the point directly using OpenCV (Coordinates remain perfectly valid inside window)
-            cv2.circle(
-                frame,
-                (pixel_x, pixel_y),
-                radius=item["radius"],
-                color=item["color"],
-                thickness=item["thickness"],
-            )
+            if item_type == "rectangle":
+                # Extract and scale normalized locations to pixel arrays
+                tl_x, tl_y = item["top_left"]
+                br_x, br_y = item["bottom_right"]
 
-        # 4. Safely split channels, convert uint8 frame to float32, and normalize for DPG
+                # Clip limits safely inside image resolution bounds
+                p1 = (int(tl_x * self.width), max(0, int(tl_y * self.height)))
+                p2 = (int(br_x * self.width), min(self.height, int(br_y * self.height)))
+
+                # Create a temporary copy layer to apply alpha transparency weight blends
+                overlay = frame.copy()
+                cv2.rectangle(overlay, p1, p2, color=item["color"], thickness=-1)
+
+                # Apply 50% blend layout handoff
+                alpha = item.get("alpha", 0.5)
+                cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, dst=frame)
+
+            elif item_type == "circle":
+                norm_x, norm_y = item["center"]
+                pixel_x = int(norm_x * self.width)
+                pixel_y = int(norm_y * self.height)
+
+                cv2.circle(
+                    frame,
+                    (pixel_x, pixel_y),
+                    radius=item["radius"],
+                    color=item["color"],
+                    thickness=item.get("thickness", -1),
+                )
+
+        # 4. Transcribe values onto float32 canvas array normalized for DPG
         float_frame = frame.astype(np.float32)
         np.divide(float_frame, 255.0, out=self.output[:, :, :3])
-
-        # Set solid alpha layer
         self.output[:, :, 3] = 1.0
 
         return self.output.ravel()
