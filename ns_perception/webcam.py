@@ -46,6 +46,8 @@ class Webcam:
         if not ret or frame is None:
             return None
 
+        frame = cv2.flip(frame, 1)
+
         return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
     def put_camera_frame(self, frame):

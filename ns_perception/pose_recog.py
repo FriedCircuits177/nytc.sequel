@@ -27,6 +27,15 @@ class MediaPipePoseRecog:
         self.latest_drive_y = 0.0
         self.latest_drive_r = 0.0
 
+        # --- TELEMETRY SMOOTHING & DEADZONE CONFIG ---
+        self.lost_frame_count = 0
+        self.MAX_LOST_FRAMES = 5  # Bridges ~150ms of micro-drops without dropping to 0
+
+        # Deadzone threshold in normalized coordinate units (Y-axis distance)
+        self.DEADZONE = (
+            0.05  # Hands must be at least this far above/below shoulders to drive
+        )
+
     def _result_callback(
         self,
         result: PoseLandmarkerResult,
@@ -35,66 +44,90 @@ class MediaPipePoseRecog:
     ):
         """Asynchronous callback function where MediaPipe delivers the pose landmarks."""
         if not result or not result.pose_landmarks:
-            # If no person detected, safely drift or stop the robot
-            self.latest_drive_y = 0.0
-            self.latest_drive_r = 0.0
+            self.lost_frame_count += 1
 
-            # Clear drawing points safely when tracking drops
-            with self.shared_state.pose_draw_data_lock:
-                self.shared_state.pose_draw_data = []
+            # Only zero-out the motors if tracking has been completely lost over multiple frames
+            if self.lost_frame_count > self.MAX_LOST_FRAMES:
+                with self.shared_state.drive_command_lock:
+                    self.shared_state.drive_y = 0.0
+                    self.shared_state.drive_r = 0.0
+                with self.shared_state.pose_draw_data_lock:
+                    self.shared_state.pose_draw_data = []
             return
 
-        # MediaPipe provides a list of people detected (we take the first one)
+        # Valid frame received, reset our tracking drop counter
+        self.lost_frame_count = 0
         landmarks = result.pose_landmarks[0]
 
-        # Landmark Indices: Left Shoulder (11), Right Shoulder (12), Left Wrist (15), Right Wrist (16)
         try:
-            # Gather landmarks for calculation
             l_shoulder = landmarks[11]
             r_shoulder = landmarks[12]
             l_wrist = landmarks[15]
             r_wrist = landmarks[16]
 
-            # --- PREPARE DATA FOR WEBCAM DRAWING ---
-            new_draw_data = []
-            # Gather tracked joints to draw tracking points for
-            tracked_joints = [l_shoulder, r_shoulder, l_wrist, r_wrist]
-
-            for joint in tracked_joints:
-                # Store normalized coordinates directly
-                new_draw_data.append(
-                    {
-                        "center": (joint.x, joint.y),
-                        "color": (0, 255, 0),  # Bright green in RGB
-                        "radius": 6,
-                        "thickness": -1,  # Solid filled circle
-                    }
-                )
-
-            # Push to shared state safely using your exact locking convention
-            with self.shared_state.pose_draw_data_lock:
-                self.shared_state.pose_draw_data = new_draw_data
-
-            # --- ANALOG CALCULATION ---
-            # NOTE: Because image Y decreases as you go UP, (Shoulder Y - Wrist Y) is POSITIVE when hands are raised.
+            # 1. Calculate relative arm extensions (Positive = Raised, Negative = Dropped)
             left_hand_up = l_shoulder.y - l_wrist.y
             right_hand_up = r_shoulder.y - r_wrist.y
 
-            # Scale factor: Map a full arm extension (approx 0.35 normalized units) to a 1.0 motor speed limit
+            # 2. Evaluate deadzone status (Are the hands moved far enough from neutral shoulder height?)
+            l_active = abs(left_hand_up) > self.DEADZONE
+            r_active = abs(right_hand_up) > self.DEADZONE
+
+            # Filter inputs based on deadzone evaluations
+            left_final = left_hand_up if l_active else 0.0
+            right_final = right_hand_up if r_active else 0.0
+
+            # 3. Scale factor and analog drive mix
             scale = 1.0 / 0.35
+            drive_y = ((left_final + right_final) / 2.0) * scale
+            drive_r = (right_final - left_final) * scale
 
-            # Compute analog drives
-            drive_y = ((left_hand_up + right_hand_up) / 2.0) * scale
-            drive_r = (right_hand_up - left_hand_up) * scale
+            # 4. Safe bound clipping and direct assignment to global telemetry channels
+            with self.shared_state.drive_command_lock:
+                self.shared_state.drive_y = max(-1.0, min(1.0, drive_y))
+                self.shared_state.drive_r = max(-1.0, min(1.0, drive_r))
 
-            # Clip outputs between -1.0 and 1.0 to ensure safe bounds for the motor controller
-            self.latest_drive_y = max(-1.0, min(1.0, drive_y))
-            self.latest_drive_r = max(-1.0, min(1.0, drive_r))
+            # --- DYNAMIC GUI COLOR CODE FEEDBACK ---
+            COLOR_ACTIVE = (0, 255, 0)  # Bright Green: Actively driving motors
+            COLOR_DEADZONE = (
+                255,
+                140,
+                0,
+            )  # Amber/Orange: Tracked but idling in deadzone
+            COLOR_ANCHOR = (0, 255, 255)  # Cyan: Static shoulder reference joints
+
+            new_draw_data = [
+                {
+                    "center": (l_shoulder.x, l_shoulder.y),
+                    "color": COLOR_ANCHOR,
+                    "radius": 5,
+                    "thickness": -1,
+                },
+                {
+                    "center": (r_shoulder.x, r_shoulder.y),
+                    "color": COLOR_ANCHOR,
+                    "radius": 5,
+                    "thickness": -1,
+                },
+                {
+                    "center": (l_wrist.x, l_wrist.y),
+                    "color": COLOR_ACTIVE if l_active else COLOR_DEADZONE,
+                    "radius": 8,
+                    "thickness": -1,
+                },
+                {
+                    "center": (r_wrist.x, r_wrist.y),
+                    "color": COLOR_ACTIVE if r_active else COLOR_DEADZONE,
+                    "radius": 8,
+                    "thickness": -1,
+                },
+            ]
+
+            with self.shared_state.pose_draw_data_lock:
+                self.shared_state.pose_draw_data = new_draw_data
 
         except Exception as e:
             logger.error(f"Error extracting landmarks: {e}")
-            with self.shared_state.pose_draw_data_lock:
-                self.shared_state.pose_draw_data = []
 
     def mainloop(self):
         # 1. Set up options with the Async Callback
@@ -137,11 +170,8 @@ class MediaPipePoseRecog:
                     timestamp_ms = int(time.time() * 1000)
                     detector.detect_async(mp_image, timestamp_ms)
 
-                    # 6. Apply calculated values safely to your robot state variables
-                    # Assuming shared_state properties require basic locking or direct modification
-                    self.shared_state.drive_y = self.latest_drive_y
-                    self.shared_state.drive_r = self.latest_drive_r
-                    logger.info("NO IT WAS ALL GOOD I THINK")
+                    # 6. Cleaned: Handled asynchronously by the callback now!
+                    # (Removed self.shared_state.drive_y assignments from here)
 
                 except Exception as e:
                     logger.error(f"Error in main loop iteration: {e}")

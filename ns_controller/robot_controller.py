@@ -200,13 +200,40 @@ class RobotController:
         logging.info("you can kiss it you can break all the rules")
 
     def opcontrol_pose(self):
+        logging.info("opcontrol pose started")
         self.queue_channels.pose_recog_active_flag.set()
+        self.max_speed = 80  # cm/s dumb sdk lol
+        self.max_rotation_speed = 280
         while not self.queue_channels.kill_flag.is_set():
+            if not self.sharedState.phase_state.is_running.is_set():
+                # logging.info("bye")
+                break
             with self.sharedState.drive_command_lock:
-                print(
-                    f"{self.sharedState.drive_x},{self.sharedState.drive_y},{self.sharedState.drive_r}"
+                x_movement = self.sharedState.drive_x
+                y_movement = self.sharedState.drive_y
+                r_movement = self.sharedState.drive_r
+            print(
+                f"{self.sharedState.drive_x},{self.sharedState.drive_y},{self.sharedState.drive_r}"
+            )
+            x_movement = int(
+                self.engbot.map_and_clamp(
+                    x_movement, -1, 1, -self.max_speed, self.max_speed
                 )
-                time.sleep(0.05)
+            )
+            y_movement = int(
+                self.engbot.map_and_clamp(
+                    y_movement, -1, 1, -self.max_speed, self.max_speed
+                )
+            )
+            r_movement = int(
+                self.engbot.map_and_clamp(
+                    r_movement, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                )
+            )
+
+            self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+            time.sleep(0.02)
+        self.engbot._sdk.mecanum_stop()
         self.queue_channels.pose_recog_active_flag.clear()
 
     def opcontrol(self, joystick_control=True):
@@ -219,7 +246,7 @@ class RobotController:
             # self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
-            self.max_zoom_rpm = 360
+            self.max_zoom_rpm = 300
             with self.sharedState.drive_command_lock:
                 buttons = self.sharedState.controller_buttons
                 x_movement = self.sharedState.drive_x
