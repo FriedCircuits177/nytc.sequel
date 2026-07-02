@@ -98,11 +98,36 @@ class WebcamProcessor:
         if frame is None:
             return None
 
+        # 1. Enforce sizing and copy matrix to prevent corrupting the source capture stream
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
+        else:
+            frame = frame.copy()
 
-        # Convert uint8 frame to float32 safely, then divide
-        # This mirrors the exact logic we used to fix the robot camera layout exception
+        # 2. Fetch the latest tracking primitives safely under lock
+        draw_items = []
+        if hasattr(self.shared_state, "pose_draw_data"):
+            with self.shared_state.pose_draw_data_lock:
+                # Quick shallow copy of the tracking structure array
+                draw_items = list(self.shared_state.pose_draw_data)
+
+        # 3. Draw tracking dots across the frame using your pre-converted RGB array
+        for item in draw_items:
+            # Denormalize normalized (0.0 -> 1.0) values back into absolute image dimensions
+            norm_x, norm_y = item["center"]
+            pixel_x = int(norm_x * self.width)
+            pixel_y = int(norm_y * self.height)
+
+            # Draw the point directly using OpenCV (Coordinates remain perfectly valid inside window)
+            cv2.circle(
+                frame,
+                (pixel_x, pixel_y),
+                radius=item["radius"],
+                color=item["color"],
+                thickness=item["thickness"],
+            )
+
+        # 4. Safely split channels, convert uint8 frame to float32, and normalize for DPG
         float_frame = frame.astype(np.float32)
         np.divide(float_frame, 255.0, out=self.output[:, :, :3])
 

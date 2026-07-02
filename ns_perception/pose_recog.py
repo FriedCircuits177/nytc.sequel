@@ -38,6 +38,10 @@ class MediaPipePoseRecog:
             # If no person detected, safely drift or stop the robot
             self.latest_drive_y = 0.0
             self.latest_drive_r = 0.0
+
+            # Clear drawing points safely when tracking drops
+            with self.shared_state.pose_draw_data_lock:
+                self.shared_state.pose_draw_data = []
             return
 
         # MediaPipe provides a list of people detected (we take the first one)
@@ -45,36 +49,52 @@ class MediaPipePoseRecog:
 
         # Landmark Indices: Left Shoulder (11), Right Shoulder (12), Left Wrist (15), Right Wrist (16)
         try:
-            l_shoulder_y = landmarks[11].y
-            r_shoulder_y = landmarks[12].y
-            l_wrist_y = landmarks[15].y
-            r_wrist_y = landmarks[16].y
+            # Gather landmarks for calculation
+            l_shoulder = landmarks[11]
+            r_shoulder = landmarks[12]
+            l_wrist = landmarks[15]
+            r_wrist = landmarks[16]
+
+            # --- PREPARE DATA FOR WEBCAM DRAWING ---
+            new_draw_data = []
+            # Gather tracked joints to draw tracking points for
+            tracked_joints = [l_shoulder, r_shoulder, l_wrist, r_wrist]
+
+            for joint in tracked_joints:
+                # Store normalized coordinates directly
+                new_draw_data.append(
+                    {
+                        "center": (joint.x, joint.y),
+                        "color": (0, 255, 0),  # Bright green in RGB
+                        "radius": 6,
+                        "thickness": -1,  # Solid filled circle
+                    }
+                )
+
+            # Push to shared state safely using your exact locking convention
+            with self.shared_state.pose_draw_data_lock:
+                self.shared_state.pose_draw_data = new_draw_data
 
             # --- ANALOG CALCULATION ---
             # NOTE: Because image Y decreases as you go UP, (Shoulder Y - Wrist Y) is POSITIVE when hands are raised.
-            # Max fully raised extension is typically around 0.3 to 0.5 units in normalized coordinates.
+            left_hand_up = l_shoulder.y - l_wrist.y
+            right_hand_up = r_shoulder.y - r_wrist.y
 
-            # 1. Calculate individual relative hand extensions (positive = up, negative = down)
-            left_hand_up = l_shoulder_y - l_wrist_y
-            right_hand_up = r_shoulder_y - r_wrist_y
-
-            # 2. Scale factor: Map a full arm extension (approx 0.35 normalized units) to a 1.0 motor speed limit
+            # Scale factor: Map a full arm extension (approx 0.35 normalized units) to a 1.0 motor speed limit
             scale = 1.0 / 0.35
 
             # Compute analog drives
-            # Forward/Backward (drive_y): Average height of both hands
             drive_y = ((left_hand_up + right_hand_up) / 2.0) * scale
-
-            # Rotation (drive_r): Difference between hands.
-            # E.g., Right hand UP and Left hand DOWN yields a positive difference -> turns Left.
             drive_r = (right_hand_up - left_hand_up) * scale
 
-            # 3. Clip outputs between -1.0 and 1.0 to ensure safe bounds for the motor controller
+            # Clip outputs between -1.0 and 1.0 to ensure safe bounds for the motor controller
             self.latest_drive_y = max(-1.0, min(1.0, drive_y))
             self.latest_drive_r = max(-1.0, min(1.0, drive_r))
 
         except Exception as e:
             logger.error(f"Error extracting landmarks: {e}")
+            with self.shared_state.pose_draw_data_lock:
+                self.shared_state.pose_draw_data = []
 
     def mainloop(self):
         # 1. Set up options with the Async Callback

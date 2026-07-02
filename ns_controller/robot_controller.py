@@ -202,7 +202,11 @@ class RobotController:
     def opcontrol_pose(self):
         self.queue_channels.pose_recog_active_flag.set()
         while not self.queue_channels.kill_flag.is_set():
-            pass
+            with self.sharedState.drive_command_lock:
+                print(
+                    f"{self.sharedState.drive_x},{self.sharedState.drive_y},{self.sharedState.drive_r}"
+                )
+                time.sleep(0.05)
         self.queue_channels.pose_recog_active_flag.clear()
 
     def opcontrol(self, joystick_control=True):
