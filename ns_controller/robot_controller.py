@@ -26,7 +26,7 @@ class RobotController:
         SharedState: ns_shared.SharedState,
     ):
         self.queue_channels = QueueChannels
-        self.sharedState = SharedState
+        self.shared_state = SharedState
         self.engbot = engbot
         self.sbbot = sbbot
 
@@ -68,6 +68,7 @@ class RobotController:
                     "apriltag_qrcode",
                 ]
             )
+            self.engbot._sdk.mechanical_joint_control(0, 90, 0, 1000)
         except Exception as e:
             logger.error(f"ENGBot initialization failed: {e}. Running offline.")
 
@@ -88,20 +89,20 @@ class RobotController:
     def mainloop(self):
         """Listens to the process_manager and executes ordered autonomous sequences."""
         while not self.queue_channels.kill_flag.is_set():
-            if not self.sharedState.phase_state.is_running.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
                 self.sbbot._sdk.balance_start_balancing()
                 time.sleep(0.02)
                 continue
 
             try:
-                with self.sharedState.phase_state.lock:
-                    current_idx = self.sharedState.phase_state.current_phase_index
+                with self.shared_state.phase_state.lock:
+                    current_idx = self.shared_state.phase_state.current_phase_index
                     if current_idx is None or current_idx >= len(
-                        self.sharedState.phase_state.phase_queue
+                        self.shared_state.phase_state.phase_queue
                     ):
-                        self.sharedState.phase_state.is_running.clear()
+                        self.shared_state.phase_state.is_running.clear()
                         continue
-                    current_phase = self.sharedState.phase_state.phase_queue[
+                    current_phase = self.shared_state.phase_state.phase_queue[
                         current_idx
                     ]
 
@@ -128,9 +129,9 @@ class RobotController:
                 logger.warning(f"Abort Signal Caught: {e}")
                 self.kill_bots()
 
-                with self.sharedState.phase_state.lock:
-                    self.sharedState.phase_state.is_running.clear()
-                    self.sharedState.phase_state.current_phase_index = None
+                with self.shared_state.phase_state.lock:
+                    self.shared_state.phase_state.is_running.clear()
+                    self.shared_state.phase_state.current_phase_index = None
                 continue
 
             except Exception as e:
@@ -145,7 +146,7 @@ class RobotController:
             self.sbbot._sdk.balance_stop_balancing()
         except Exception as e:
             if (
-                getattr(self.sharedState, "peripheral_sbbot_status", None)
+                getattr(self.shared_state, "peripheral_sbbot_status", None)
                 == ns_shared.PeripheralStatus.CONNECTED
             ):
                 logger.exception(e)
@@ -154,7 +155,7 @@ class RobotController:
             self.engbot._sdk.mecanum_stop()
         except Exception as e:
             if (
-                getattr(self.sharedState, "peripheral_engbot_status", None)
+                getattr(self.shared_state, "peripheral_engbot_status", None)
                 == ns_shared.PeripheralStatus.CONNECTED
             ):
                 logger.exception(e)
@@ -199,7 +200,12 @@ class RobotController:
         self.advance_phase()
 
     def phase4(self):
-        time.sleep(1)
+        self.queue_channels.block_detection_active_flag.set()
+        while not self.queue_channels.kill_flag.is_set():
+            with self.shared_state.block_detection_data_lock:
+                data = self.shared_state.block_detection_data
+            logging.info(len(data))
+        self.queue_channels.block_detection_active_flag.clear()
         self.advance_phase()
 
     def phase4a(self):
@@ -224,7 +230,7 @@ class RobotController:
                 break
 
         while not self.queue_channels.kill_flag.is_set():
-            if not self.sharedState.phase_state.is_running.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
                 break
 
             try:
@@ -265,12 +271,12 @@ class RobotController:
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
             self.max_zoom_rpm = 300
-            with self.sharedState.drive_command_lock:
-                buttons = self.sharedState.controller_buttons
-                x_movement = self.sharedState.drive_x
-                y_movement = self.sharedState.drive_y
-                r_movement = self.sharedState.drive_r
-                r2 = self.sharedState.drive_r2
+            with self.shared_state.drive_command_lock:
+                buttons = self.shared_state.controller_buttons
+                x_movement = self.shared_state.drive_x
+                y_movement = self.shared_state.drive_y
+                r_movement = self.shared_state.drive_r
+                r2 = self.shared_state.drive_r2
 
             if r2 > 0.4 and not self.zoom:
                 self.engbot._sdk.mecanum_motor_control(
@@ -310,18 +316,18 @@ class RobotController:
         self.engbot._sdk.mecanum_stop()
 
     def advance_phase(self):
-        with self.sharedState.phase_state.lock:
-            if self.sharedState.phase_state.current_phase_index is None:
-                self.sharedState.phase_state.current_phase_index = 0
+        with self.shared_state.phase_state.lock:
+            if self.shared_state.phase_state.current_phase_index is None:
+                self.shared_state.phase_state.current_phase_index = 0
             else:
-                self.sharedState.phase_state.current_phase_index += 1
+                self.shared_state.phase_state.current_phase_index += 1
 
             # Check if we ran out of phases
-            if self.sharedState.phase_state.current_phase_index >= len(
-                self.sharedState.phase_state.phase_queue
+            if self.shared_state.phase_state.current_phase_index >= len(
+                self.shared_state.phase_state.phase_queue
             ):
-                self.sharedState.phase_state.current_phase_index = None
-            self.sharedState.phase_state.is_running.clear()
+                self.shared_state.phase_state.current_phase_index = None
+            self.shared_state.phase_state.is_running.clear()
 
     def opcontrol_legacy(self):
         self.max_rpm = 360
@@ -342,10 +348,10 @@ class RobotController:
         dr = 0.0
 
         while not self.queue_channels.kill_flag.is_set():
-            with self.sharedState.drive_command_lock:
-                x_movement = self.sharedState.drive_x
-                y_movement = self.sharedState.drive_y
-                r_movement = self.sharedState.drive_r
+            with self.shared_state.drive_command_lock:
+                x_movement = self.shared_state.drive_x
+                y_movement = self.shared_state.drive_y
+                r_movement = self.shared_state.drive_r
 
             # 1. Evaluate Delta Changes
             dx = abs(x_movement - last_x)

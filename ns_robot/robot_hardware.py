@@ -112,12 +112,13 @@ class RobotHardware:
         return (front_left, front_right, back_left, back_right)
 
     def SBB_AP_centralization_approaching(
-        self, distance=0.5, gap=20, fwd_spd=5, turn_spd=30
+        self, distance=0.5, gap=20, fwd_spd=5, turn_spd=20, target_id=5
     ):
         """
-        Drive toward a detected AprilTag, keeping it centered in the camera frame.
+        Drive toward the closest detected AprilTag in a path sequence, keeping it centered.
+        Breaks out fully only when arriving at the final AprilTag (when only 1 tag remains).
         """
-        logging.info("SBB_AP_centralization_approaching: started the run!")
+        logging.info("SBB_AP_centralization_approaching: started path following run!")
 
         while not self.queue_channels.kill_flag.is_set():
             if not self.shared_state.phase_state.is_running.is_set():
@@ -126,14 +127,29 @@ class RobotHardware:
             ui_primitives = []
 
             try:
-                AP_info = self._sdk.get_apriltag_total_info().copy()
-                AP_x = AP_info[0][1]
-                AP_y = AP_info[0][2]
-                AP_height = AP_info[0][3]
-                AP_width = AP_info[0][4]
-                AP_distance = AP_info[0][6]
+                # 1. Grab raw information matrix
+                raw_info = self._sdk.get_apriltag_total_info()
+                if not raw_info:
+                    raise IndexError
 
-                # --- 1. POPULATE ACTIVE VISUALS ---
+                AP_info = raw_info.copy()
+                total_tags_visible = len(AP_info)
+
+                # 2. Path Finding Strategy: Always target the closest tag
+                # We sort the detection arrays by their distance element (index 6)
+                AP_info.sort(key=lambda tag: float(tag[6]))
+
+                # Target tag is now guaranteed to be at index 0
+                target_tag = AP_info[0]
+
+                AP_id = target_tag[0]
+                AP_x = target_tag[1]
+                AP_y = target_tag[2]
+                AP_height = target_tag[3]
+                AP_width = target_tag[4]
+                AP_distance = float(target_tag[6])
+
+                # --- POPULATE ACTIVE VISUALS FOR THE CURRENT TARGET ---
                 half_w_norm = (AP_width / 2.0) / 640.0
                 half_h_norm = (AP_height / 2.0) / 480.0
                 center_x_norm = AP_x / 640.0
@@ -143,22 +159,10 @@ class RobotHardware:
                     {
                         "type": "rectangle",
                         "corners": [
-                            (
-                                center_x_norm - half_w_norm,
-                                center_y_norm - half_h_norm,
-                            ),
-                            (
-                                center_x_norm + half_w_norm,
-                                center_y_norm - half_h_norm,
-                            ),
-                            (
-                                center_x_norm + half_w_norm,
-                                center_y_norm + half_h_norm,
-                            ),
-                            (
-                                center_x_norm - half_w_norm,
-                                center_y_norm + half_h_norm,
-                            ),
+                            (center_x_norm - half_w_norm, center_y_norm - half_h_norm),
+                            (center_x_norm + half_w_norm, center_y_norm - half_h_norm),
+                            (center_x_norm + half_w_norm, center_y_norm + half_h_norm),
+                            (center_x_norm - half_w_norm, center_y_norm + half_h_norm),
                         ],
                         "color": (255, 0, 255),
                         "thickness": 2,
@@ -169,7 +173,7 @@ class RobotHardware:
                     {
                         "type": "text",
                         "position": (0.05, 0.08),
-                        "text": f"({int(AP_x)}, {round(float(AP_distance), 2)}m)",
+                        "text": f"Target Dist: {round(AP_distance, 2)}m | Visible: {total_tags_visible}",
                         "color": (0, 255, 0),
                         "scale": 0.6,
                         "thickness": 1,
@@ -177,12 +181,12 @@ class RobotHardware:
                 )
 
             except IndexError:
-                logging.error("No AprilTag detected bleh")
+                logging.error("No AprilTags detected in frame")
                 ui_primitives.append(
                     {
                         "type": "text",
                         "position": (0.05, 0.08),
-                        "text": "No AprilTag",
+                        "text": "Searching for Path Tags...",
                         "color": (0, 0, 255),
                         "scale": 0.6,
                         "thickness": 1,
@@ -190,58 +194,65 @@ class RobotHardware:
                 )
                 with self.shared_state.sbbot_draw_data_lock:
                     self.shared_state.sbbot_draw_data = ui_primitives
-                self._sdk.balance_move_speed(0, speed=int(0.5 * fwd_spd))
+                # Search spin mode if path tracking gets completely broken
+                # self._sdk.balance_move_speed(0, speed=int(0.5 * fwd_spd))
                 time.sleep(0.02)
                 continue
 
             except Exception as e:
-                logging.error(f"Inner processing error: {e}")
+                logging.error(f"Path processing failure: {e}")
                 time.sleep(0.02)
                 continue
 
             with self.shared_state.sbbot_draw_data_lock:
                 self.shared_state.sbbot_draw_data = ui_primitives
 
-            # --- CRITICAL FIX: FORCE EXPLICIT FLOAT CASTING ---
-            # --- SNAPSHOT STABILIZATION ---
-            # try:
-            #     current_dist = float(
-            #         AP_info[0][6]
-            #     )  # Lock a local snapshot copy right here
-            #     target_dist = float(distance)
-            # except Exception as e:
-            #     logging.error(f"Snapshot tracking failed: {e}")
-            #     time.sleep(0.02)
-            #     continue
+            logging.info(
+                f"Targeting closest X: {AP_x}, Dist: {AP_distance}m. ID: {AP_id}. Total tags seen: {total_tags_visible}"
+            )
 
-            # Precise diagnostic logging
-            logging.info(f"{AP_x},{AP_y},{AP_distance}")
+            # --- ARBITRATION ROUTING FOR PATH ENDPOINTS ---
+            if (
+                AP_distance <= distance and AP_id == target_id
+                # and (AP_x > 320 - gap)
+                # and (AP_x < 320 + gap)
+            ):
+                if total_tags_visible == 1:
+                    # TRUE ENDPOINT REACHED: Close to target and no alternative tags exist
+                    self._sdk.balance_stop_balancing()
+                    self._sdk.screen_display_background(6)
 
-            if AP_distance <= distance:
-                # self._sdk.balance_move_speed(0, 0)
-                self._sdk.balance_stop_balancing()
-                self._sdk.screen_display_background(6)
+                    with self.shared_state.sbbot_draw_data_lock:
+                        self.shared_state.sbbot_draw_data = []
 
-                with self.shared_state.sbbot_draw_data_lock:
-                    self.shared_state.sbbot_draw_data = []
-
-                logging.info("!!! EXECUTING BREAK STATEMENT NOW !!!")
-                break  # This WILL kill this specific while loop.
-
+                    logging.info(
+                        "!!! FINAL TAG IN SEQUENCE DETECTED AND REACHED: BREAKING OUT !!!"
+                    )
+                    break
+                else:
+                    # Intermediate waypoint node reached. Transition to tracking the next index tag.
+                    logging.info(
+                        "Waypoint tag reached. Transitioning focus to the next node..."
+                    )
+                    # Give the physical robot loop a quick tick window to pivot toward the next tag
+                    time.sleep(0.1)
+                    continue
+            elif AP_distance <= distance and AP_id == target_id:
+                logging.info("I COULD DASH NW BUT NO")
+            # --- MOVEMENT DIRECTION CONTROLS ---
             elif AP_x < 320 - gap:
-                logging.info("Moving Left")
-                self._sdk.balance_move_turn(0, fwd_spd, 2, turn_spd)
+                logging.info("Correcting Left toward closest tag")
+                self._sdk.balance_move_turn(0, int(1 * fwd_spd), 2, turn_spd)
             elif AP_x > 320 + gap:
-                logging.info("Moving Right")
-                self._sdk.balance_move_turn(0, fwd_spd, 3, turn_spd)
+                logging.info("Correcting Right toward closest tag")
+                self._sdk.balance_move_turn(0, int(1 * fwd_spd), 3, turn_spd)
             elif AP_distance > distance:
-                logging.info("Moving forward")
+                logging.info("Advancing along path chain")
                 self._sdk.balance_move_speed(0, fwd_spd)
+
             time.sleep(0.02)
 
         logging.info("End of loop")
-
-        # This logs the exact millisecond the function officially finishes execution
         logging.info(f"=== FUNCTION EXITED FULLY AT {time.time()} ===")
 
     def SBB_charge_and_stop(self):
@@ -282,8 +293,8 @@ class RobotHardware:
         max_speed=20,
         strafe_speed=10,
         threshold=50,
-        arm_down_distance=10,
-        pick_distance=3,
+        arm_down_distance=40,
+        pick_distance=15,
     ):
         arm_down = False
         picked = False

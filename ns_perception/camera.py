@@ -103,8 +103,8 @@ class CameraGUIProcessor:
         gui_camera_frame,
         gui_camera_frame_lock,
         active_flag,
-        draw_data_list,  # Directly passed list reference from shared state
-        draw_data_lock,  # Directly passed explicit lock object
+        draw_data_list,
+        draw_data_lock,
     ):
         self.queue_channels = queue_channels
         self.shared_state = shared_state
@@ -134,9 +134,10 @@ class CameraGUIProcessor:
             frame = frame.copy()
 
         # --- UNIFIED DRAWING LAYER SYSTEM ---
-        # Safely copy the items using the injected lock instance
         with self.draw_data_lock:
-            draw_items = list(self.draw_data_list)
+            draw_items = (
+                list(self.draw_data_list) if self.draw_data_list is not None else []
+            )
 
         for item in draw_items:
             item_type = item.get("type", "circle")
@@ -190,7 +191,6 @@ class CameraGUIProcessor:
                 text_str = item.get("text", "")
                 font_scale = item.get("scale", 0.5)
 
-                # Render drop shadow border then the main text overlay
                 cv2.putText(
                     frame,
                     text_str,
@@ -217,35 +217,39 @@ class CameraGUIProcessor:
         np.divide(rgb_frame, 255.0, out=self.output[:, :, :3])
         self.output[:, :, 3] = 1.0
 
-        return self.output.copy()
+        # CRITICAL FIX: DearPyGUI textures require a completely flattened (1D) array layout
+        return self.output.ravel()
 
     def mainloop(self):
         """Thread loop pulling BGR frames, transforming them, and piping to the GUI."""
-        last_frame_id = None
         logger.info("Camera GUI conversion processing loop started.")
 
         while not self.queue_channels.kill_flag.is_set():
             self.active_flag.wait()
+
+            frame = None
             with self.raw_camera_frame_lock:
                 if self.raw_camera_frame_lock is self.shared_state.sb_camera_frame_lock:
-                    frame = self.shared_state.sb_camera_frame
+                    if self.shared_state.sb_camera_frame is not None:
+                        frame = (
+                            self.shared_state.sb_camera_frame.copy()
+                        )  # Capture deep memory snapshot
                 elif (
                     self.raw_camera_frame_lock
                     is self.shared_state.eng_camera_frame_lock
                 ):
-                    frame = self.shared_state.eng_camera_frame
+                    if self.shared_state.eng_camera_frame is not None:
+                        frame = (
+                            self.shared_state.eng_camera_frame.copy()
+                        )  # Capture deep memory snapshot
                 else:
-                    frame = self.raw_camera_frame
+                    if self.raw_camera_frame is not None:
+                        frame = self.raw_camera_frame.copy()
 
             if frame is None:
-                time.sleep(0.001)
+                time.sleep(0.01)
                 continue
 
-            if id(frame) == last_frame_id:
-                time.sleep(0.001)
-                continue
-
-            last_frame_id = id(frame)
             processed_gui_frame = self.process(frame)
 
             if processed_gui_frame is not None:
@@ -261,3 +265,6 @@ class CameraGUIProcessor:
                         is self.shared_state.eng_gui_camera_frame_lock
                     ):
                         self.shared_state.eng_gui_camera_frame = processed_gui_frame
+
+            # FIX: Drop volatile id() comparison entirely and throttle via a smooth loop cadence ~30 FPS
+            time.sleep(0.03)

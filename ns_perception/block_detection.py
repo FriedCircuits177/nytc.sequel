@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 class BlockDetector:
     def __init__(
         self,
-        QueueChannels,  # ns_shared.QueueChannels
-        SharedState,  # ns_shared.SharedState
+        QueueChannels: ns_shared.QueueChannels,  # ns_shared.QueueChannels
+        SharedState: ns_shared.SharedState,  # ns_shared.SharedState
     ):
         self.queue_channels = QueueChannels
         self.shared_state = SharedState
@@ -88,20 +88,9 @@ class BlockDetector:
         return detected_blocks
 
     def update_data_queue(self, data):
-        """Drops multi-color block payload data into the Size-1 tracking queue."""
-        if data is None:
-            return
-
-        if self.queue_channels.block_detection_data.full():
-            try:
-                self.queue_channels.block_detection_data.get_nowait()
-            except queue.Empty:
-                pass
-
-        try:
-            self.queue_channels.block_detection_data.put_nowait(data)
-        except queue.Full:
-            pass
+        """Drops multi-color block payload data into the shared state."""
+        with self.shared_state.block_detection_data_lock:
+            self.shared_state.block_detection_data = data
 
     def mainloop(self):
         """Continuously running tracking loop bound to the process kill flag."""
