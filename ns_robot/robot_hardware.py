@@ -1,5 +1,6 @@
 import logging
 import time
+from math import dist
 
 import cv2
 import numpy as np
@@ -111,157 +112,162 @@ class RobotHardware:
         return (front_left, front_right, back_left, back_right)
 
     def SBB_AP_centralization_approaching(
-        self, distance=0.7, gap=20, fwd_spd=5, turn_spd=5
+        self, distance=0.5, gap=20, fwd_spd=5, turn_spd=30
     ):
         """
         Drive toward a detected AprilTag, keeping it centered in the camera frame.
         """
         logging.info("SBB_AP_centralization_approaching: started the run!")
-        try:
-            while not self.queue_channels.kill_flag.is_set():
-                if not self.shared_state.phase_state.is_running.is_set():
-                    break
 
-                ui_primitives = []
+        while not self.queue_channels.kill_flag.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
+                break
 
-                try:
-                    AP_info = self._sdk.get_apriltag_total_info().copy()
-                    AP_x = AP_info[0][1]
-                    AP_y = AP_info[0][2]
-                    AP_height = AP_info[0][3]
-                    AP_width = AP_info[0][4]
-                    AP_distance = AP_info[0][6]
+            ui_primitives = []
 
-                    # --- 1. POPULATE ACTIVE VISUALS ---
-                    half_w_norm = (AP_width / 2.0) / 640.0
-                    half_h_norm = (AP_height / 2.0) / 480.0
-                    center_x_norm = AP_x / 640.0
-                    center_y_norm = AP_y / 480.0
+            try:
+                AP_info = self._sdk.get_apriltag_total_info().copy()
+                AP_x = AP_info[0][1]
+                AP_y = AP_info[0][2]
+                AP_height = AP_info[0][3]
+                AP_width = AP_info[0][4]
+                AP_distance = AP_info[0][6]
 
-                    ui_primitives.append(
-                        {
-                            "type": "rectangle",
-                            "corners": [
-                                (
-                                    center_x_norm - half_w_norm,
-                                    center_y_norm - half_h_norm,
-                                ),
-                                (
-                                    center_x_norm + half_w_norm,
-                                    center_y_norm - half_h_norm,
-                                ),
-                                (
-                                    center_x_norm + half_w_norm,
-                                    center_y_norm + half_h_norm,
-                                ),
-                                (
-                                    center_x_norm - half_w_norm,
-                                    center_y_norm + half_h_norm,
-                                ),
-                            ],
-                            "color": (255, 0, 255),
-                            "thickness": 2,
-                        }
-                    )
+                # --- 1. POPULATE ACTIVE VISUALS ---
+                half_w_norm = (AP_width / 2.0) / 640.0
+                half_h_norm = (AP_height / 2.0) / 480.0
+                center_x_norm = AP_x / 640.0
+                center_y_norm = AP_y / 480.0
 
-                    ui_primitives.append(
-                        {
-                            "type": "text",
-                            "position": (0.05, 0.08),
-                            "text": f"({int(AP_x)}, {round(float(AP_distance), 2)}m)",
-                            "color": (0, 255, 0),
-                            "scale": 0.6,
-                            "thickness": 1,
-                        }
-                    )
-
-                except IndexError:
-                    logging.error("No AprilTag detected bleh")
-                    ui_primitives.append(
-                        {
-                            "type": "text",
-                            "position": (0.05, 0.08),
-                            "text": "No AprilTag",
-                            "color": (0, 0, 255),
-                            "scale": 0.6,
-                            "thickness": 1,
-                        }
-                    )
-                    with self.shared_state.sbbot_draw_data_lock:
-                        self.shared_state.sbbot_draw_data = ui_primitives
-                    time.sleep(0.02)
-                    continue
-                except Exception as e:
-                    logging.error(f"Inner processing error: {e}")
-                    time.sleep(0.02)
-                    continue
-
-                with self.shared_state.sbbot_draw_data_lock:
-                    self.shared_state.sbbot_draw_data = ui_primitives
-
-                # --- CRITICAL FIX: FORCE EXPLICIT FLOAT CASTING ---
-                # --- SNAPSHOT STABILIZATION ---
-                try:
-                    current_dist = float(
-                        AP_info[0][6]
-                    )  # Lock a local snapshot copy right here
-                    target_dist = float(distance)
-                except Exception as e:
-                    logging.error(f"Snapshot tracking failed: {e}")
-                    time.sleep(0.02)
-                    continue
-
-                # Precise diagnostic logging
-                logging.info(
-                    f"Checking Condition: Is {current_dist} <= {target_dist}? Result: {current_dist <= target_dist}"
+                ui_primitives.append(
+                    {
+                        "type": "rectangle",
+                        "corners": [
+                            (
+                                center_x_norm - half_w_norm,
+                                center_y_norm - half_h_norm,
+                            ),
+                            (
+                                center_x_norm + half_w_norm,
+                                center_y_norm - half_h_norm,
+                            ),
+                            (
+                                center_x_norm + half_w_norm,
+                                center_y_norm + half_h_norm,
+                            ),
+                            (
+                                center_x_norm - half_w_norm,
+                                center_y_norm + half_h_norm,
+                            ),
+                        ],
+                        "color": (255, 0, 255),
+                        "thickness": 2,
+                    }
                 )
 
-                if current_dist <= target_dist:
-                    logging.info("!!! CRITICAL: INSIDE THE IF BLOCK RIGHT NOW !!!")
+                ui_primitives.append(
+                    {
+                        "type": "text",
+                        "position": (0.05, 0.08),
+                        "text": f"({int(AP_x)}, {round(float(AP_distance), 2)}m)",
+                        "color": (0, 255, 0),
+                        "scale": 0.6,
+                        "thickness": 1,
+                    }
+                )
 
-                    self._sdk.balance_stop_balancing()
-                    self._sdk.screen_display_background(6)
+            except IndexError:
+                logging.error("No AprilTag detected bleh")
+                ui_primitives.append(
+                    {
+                        "type": "text",
+                        "position": (0.05, 0.08),
+                        "text": "No AprilTag",
+                        "color": (0, 0, 255),
+                        "scale": 0.6,
+                        "thickness": 1,
+                    }
+                )
+                with self.shared_state.sbbot_draw_data_lock:
+                    self.shared_state.sbbot_draw_data = ui_primitives
+                self._sdk.balance_move_speed(0, speed=int(0.5 * fwd_spd))
+                time.sleep(0.02)
+                continue
 
-                    with self.shared_state.sbbot_draw_data_lock:
-                        self.shared_state.sbbot_draw_data = []
+            except Exception as e:
+                logging.error(f"Inner processing error: {e}")
+                time.sleep(0.02)
+                continue
 
-                    logging.info("!!! EXECUTING BREAK STATEMENT NOW !!!")
-                    break  # This WILL kill this specific while loop.
+            with self.shared_state.sbbot_draw_data_lock:
+                self.shared_state.sbbot_draw_data = ui_primitives
 
-                elif AP_x < 320 - gap:
-                    self._sdk.balance_move_turn(0, fwd_spd, 2, turn_spd)
-                elif AP_x > 320 + gap:
-                    self._sdk.balance_move_turn(0, fwd_spd, 3, turn_spd)
-                elif current_dist > target_dist:
-                    self._sdk.balance_move_speed(0, fwd_spd)
+            # --- CRITICAL FIX: FORCE EXPLICIT FLOAT CASTING ---
+            # --- SNAPSHOT STABILIZATION ---
+            # try:
+            #     current_dist = float(
+            #         AP_info[0][6]
+            #     )  # Lock a local snapshot copy right here
+            #     target_dist = float(distance)
+            # except Exception as e:
+            #     logging.error(f"Snapshot tracking failed: {e}")
+            #     time.sleep(0.02)
+            #     continue
 
-        except Exception as e:
-            logging.error(f"SBB_AP loop crashed completely: {e}")
+            # Precise diagnostic logging
+            logging.info(f"{AP_x},{AP_y},{AP_distance}")
 
-            # This logs the exact millisecond the function officially finishes execution
+            if AP_distance <= distance:
+                # self._sdk.balance_move_speed(0, 0)
+                self._sdk.balance_stop_balancing()
+                self._sdk.screen_display_background(6)
+
+                with self.shared_state.sbbot_draw_data_lock:
+                    self.shared_state.sbbot_draw_data = []
+
+                logging.info("!!! EXECUTING BREAK STATEMENT NOW !!!")
+                break  # This WILL kill this specific while loop.
+
+            elif AP_x < 320 - gap:
+                logging.info("Moving Left")
+                self._sdk.balance_move_turn(0, fwd_spd, 2, turn_spd)
+            elif AP_x > 320 + gap:
+                logging.info("Moving Right")
+                self._sdk.balance_move_turn(0, fwd_spd, 3, turn_spd)
+            elif AP_distance > distance:
+                logging.info("Moving forward")
+                self._sdk.balance_move_speed(0, fwd_spd)
+            time.sleep(0.02)
+
+        logging.info("End of loop")
+
+        # This logs the exact millisecond the function officially finishes execution
         logging.info(f"=== FUNCTION EXITED FULLY AT {time.time()} ===")
 
     def SBB_charge_and_stop(self):
+        # charge
         self._sdk.balance_move_speed_times(0, 80, 100, 1)
-        while True:
-            self._sdk.screen_display_background(7)
-            line_type = self._sdk.get_single_track_total_info()
-            logging.info(f"Line type: {line_type}")
+        # stop
 
-            if line_type == 1:
-                while True:
-                    self._sdk.screen_display_background(0)
-                    line_type = self._sdk.get_single_track_total_info()
-                    logging.info(f"Line type: {line_type}")
+        # while not self.queue_channels.kill_flag.is_set():
+        #     self._sdk.screen_display_background(7)
+        #     line_type = self._sdk.get_single_track_total_info()
+        #     logging.info(f"Line type: {line_type}")
+        #     self._sdk.balance_move_speed(0, 40)
 
-                    if line_type == 0:
-                        break
+        #     if line_type == 1:
+        #         while not self.queue_channels.kill_flag.is_set():
+        #             self._sdk.screen_display_background(0)
+        #             line_type = self._sdk.get_single_track_total_info()
+        #             logging.info(f"Line type: {line_type}")
+        #             self._sdk.balance_move_speed(0, 80)
 
-                    self._sdk.balance_move_speed(0, 80)
+        #             if line_type == 0:
+        #                 self._sdk.balance_move_speed(0, 0)
+        #                 break
 
-                break
-
-            self._sdk.balance_move_speed(0, 40)
+        #         self._sdk.balance_move_speed(0, 0)
+        #         break
 
         self._sdk.screen_display_background(6)
         self._sdk.balance_move_speed(0, 0)
@@ -273,11 +279,11 @@ class RobotHardware:
 
     def eng_ball_centralise_and_pick(
         self,
-        max_speed=40,
-        strafe_speed=25,
-        threshold=0.1,
-        arm_down_distance=0.5,
-        pick_distance=0.1,
+        max_speed=20,
+        strafe_speed=10,
+        threshold=50,
+        arm_down_distance=10,
+        pick_distance=3,
     ):
         arm_down = False
         picked = False
@@ -296,6 +302,7 @@ class RobotHardware:
                     continue
                 else:
                     # excellent, the ball is picked up and out of sight
+                    logging.info("weGOT IT")
                     break
 
             x_error = data["x_error"]
@@ -303,24 +310,33 @@ class RobotHardware:
             distance = data["distance"]
             y = data["y"]
 
+            logging.info(f"I SAW THE BALL, I AM {x_error} off and {distance} away")
+
             if distance < pick_distance and arm_down:
+                logger.info("PICKING")
                 # original_y = y
                 self._sdk.mechanical_clamp_close()
                 self._sdk.mechanical_joint_control(0, 110, 90, 2000)
-                self._sdk.mecanum_move_xyz(0, 0.5 * max_speed, 0)
+                self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
                 picked = True
             elif distance < arm_down_distance and not arm_down:
-                self._sdk.mecanum_move_xyz(0, 0.5 * max_speed, 0)
+                logger.info("ARM COMING DOWN")
+                self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
                 self._sdk.mechanical_clamp_release()
-                self._sdk.mechanical_joint_control(0, -20, 70, 1000)
+                self._sdk.mechanical_joint_control(0, -60, -45, 1000)
                 arm_down = True
-            elif x_error > (1 + threshold):
+            elif x_error > (0 + threshold):
+                logger.info("GO RIGHT")
                 # thatmeans it's to the right
-                self._sdk.mecanum_move_xyz(-strafe_speed, max_speed, 0)
-            elif x_error < (1 - threshold):
-                # that means it's to the left i guess
                 self._sdk.mecanum_move_xyz(strafe_speed, max_speed, 0)
-            elif (1 - threshold) < x_error and (1 + threshold) > x_error:
+
+            elif x_error < (0 - threshold):
+                logger.info("GO LEFT")
+                # that means it's to the left i guess
+                self._sdk.mecanum_move_xyz(-strafe_speed, max_speed, 0)
+
+            else:
+                logger.info("GO STRAIGHT")
                 # within acceptable centre, so go forward
                 self._sdk.mecanum_move_xyz(0, max_speed, 0)
 
@@ -427,3 +443,83 @@ class RobotHardware:
                     else:
                         # Ball is centred but not yet close enough — drive forward
                         self._sdk.mecanum_move_xyz(0, 5, 0)
+                        import cv2
+                        import numpy as np
+
+    def detect_horizontal_black_line(self, frame):
+        if frame is None:
+            return None
+
+        # 1. Convert to grayscale
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+        # 2. Blur to smooth out wood grain texture noise
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        # 3. Sobel Y-gradient: Detects horizontal changes (edges that run left-to-right)
+        # cv2.CV_16S prevents clipping of negative gradients (going from light to dark floor)
+        sobel_y = cv2.Sobel(blurred, cv2.CV_16S, 0, 1, ksize=3)
+        abs_sobel_y = cv2.convertScaleAbs(sobel_y)
+
+        # 4. Threshold to isolate the strongest horizontal edges
+        _, thresh = cv2.threshold(abs_sobel_y, 50, 255, cv2.THRESH_BINARY)
+
+        # 5. Morphological Close: Bridge small gaps across the line length
+        kernel = np.ones(
+            (3, 15), np.uint8
+        )  # Wide kernel to emphasize horizontal structures
+        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+        # 6. Find contours of the edges
+        contours, _ = cv2.findContours(
+            closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+
+        best_line = None
+        max_width = 0
+
+        for contour in contours:
+            # Get a straight bounding rectangle
+            x, y, w, h = cv2.boundingRect(contour)
+
+            # --- The Anti-Floorboard Filters ---
+            # 1. Reject tiny noise
+            if w < 50 or h < 5:
+                continue
+
+            # 2. Aspect Ratio: A horizontal line must be significantly wider than it is tall
+            aspect_ratio = w / float(h)
+            if aspect_ratio < 4.0:  # Adjust this if your line is thicker/closer
+                continue
+
+            # 3. Confirm it's actually dark/black
+            # Sample the pixels inside the bounding box from the original gray image
+            roi = gray[y : y + h, x : x + w]
+            mean_brightness = np.mean(roi)
+            if (
+                mean_brightness > 100
+            ):  # Reject if the inside is too bright (not a black line)
+                continue
+
+            # Keep the widest matching horizontal line
+            if w > max_width:
+                max_width = w
+                # Center coordinates of the detected line
+                center_x = x + (w / 2)
+                center_y = y + (h / 2)
+                best_line = (center_x, center_y, w, h)
+
+        return best_line  # Returns (cx, cy, width, height) or None
+
+    def eng_find_face_and_stop_line(self, y_threshold):
+        while not self.queue_channels.kill_flag.is_set():
+            with self.shared_state.eng_camera_frame_lock:
+                frame = self.shared_state.eng_camera_frame
+            data = self.detect_horizontal_black_line(frame)
+            if not data:
+                logging.warning("NO LINE DETECTED")
+                time.sleep(0.02)
+                continue
+
+    def eng_throw_ball(self):
+        pass

@@ -67,7 +67,7 @@ class SharedState:
         self.ball_detection_data = {}
         self.ball_detection_data_lock = threading.Lock()
 
-        self.block_detection_data = {}
+        self.block_detection_data = []
         self.block_detection_data_lock = threading.Lock()
 
         # gui <-> backend peripheral command stuff

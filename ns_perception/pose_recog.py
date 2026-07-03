@@ -42,8 +42,8 @@ class MediaPipePoseRecog:
                 self._push_to_robot_queue(0.0, 0.0, 0.0)
                 self.sent_zero_last = True
 
-            with self.shared_state.pose_draw_data_lock:
-                self.shared_state.pose_draw_data = []
+            with self.shared_state.webcam_draw_data_lock:
+                self.shared_state.webcam_draw_data = []
             return
 
         # Valid tracking frame received
@@ -56,7 +56,7 @@ class MediaPipePoseRecog:
             l_wrist = landmarks[15]
             r_wrist = landmarks[16]
 
-            # 1. Calculate relative extensions
+            # 1. Calculate relative extensions (vertical)
             left_hand_up = l_shoulder.y - l_wrist.y
             right_hand_up = r_shoulder.y - r_wrist.y
 
@@ -64,12 +64,29 @@ class MediaPipePoseRecog:
             l_active = abs(left_hand_up) > self.DEADZONE
             r_active = abs(right_hand_up) > self.DEADZONE
 
-            # 3. Handle data routing conditions
+            # 3. Check for the Crossed Hands gesture inside the deadzone
+            # If neither hand is extended vertically, check if they cross horizontally
+            hands_crossed = False
             if not l_active and not r_active:
+                # Left wrist X is greater than Right wrist X -> they have crossed over
+                if l_wrist.x > r_wrist.x:
+                    hands_crossed = True
+
+            # 4. Handle data routing conditions based on the gestures
+            # if hands_crossed:
+            #     # Target action when hands are crossed inside the deadzone
+            #     logger.info("Gesture Detected: Hands Crossed inside Deadzone!")
+            #     # For example: Trigger a stop command, clear states, or set a specific flag
+            #     self._push_to_robot_queue(0.0, 0.0, 0.0)
+            #     self.shared_state.phase_state.is_running.clear()
+
+            elif not l_active and not r_active:
+                # Normal deadzone behavior (hands up neutral, not crossed)
                 if not self.sent_zero_last:
                     self._push_to_robot_queue(0.0, 0.0, 0.0)
                     self.sent_zero_last = True
             else:
+                # Driving behavior (active extensions)
                 scale = 1.0 / 0.35
                 drive_y = ((left_hand_up + right_hand_up) / 2.0) * scale
                 drive_r = (right_hand_up - left_hand_up) * scale
@@ -143,8 +160,8 @@ class MediaPipePoseRecog:
                     }
                 )
 
-            with self.shared_state.pose_draw_data_lock:
-                self.shared_state.pose_draw_data = new_draw_data
+            with self.shared_state.webcam_draw_data_lock:
+                self.shared_state.webcam_draw_data = new_draw_data
 
         except Exception as e:
             logger.error(f"Error extracting landmarks: {e}")

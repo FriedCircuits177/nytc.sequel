@@ -79,16 +79,19 @@ class RobotController:
         try:
             logger.info("Attempting to connect SBBot...")
             self.sbbot.connect()
+            self.sbbot._sdk.balance_start_balancing()
+            # self.sbbot._sdk.balance_set_acceleration(0.5)
+            self.sbbot._sdk.load_models(["apriltag_qrcode"])
         except Exception as e:
             logger.error(f"SBBot initialization failed: {e}. Running offline.")
-        self.sbbot._sdk.balance_start_balancing()
-        self.sbbot._sdk.balance_set_acceleration(0.5)
-        self.sbbot._sdk.load_models(["apriltag_qrcode"])
 
     def mainloop(self):
         """Listens to the process_manager and executes ordered autonomous sequences."""
         while not self.queue_channels.kill_flag.is_set():
-            self.sharedState.phase_state.is_running.wait()
+            if not self.sharedState.phase_state.is_running.is_set():
+                self.sbbot._sdk.balance_start_balancing()
+                time.sleep(0.02)
+                continue
 
             try:
                 with self.sharedState.phase_state.lock:
@@ -162,9 +165,9 @@ class RobotController:
     def phase1(self):
         """sbb moves to april tag"""
         self.sbbot.SBB_AP_centralization_approaching(
-            distance=0.15, gap=20, fwd_spd=20, turn_spd=5
+            distance=0.4, gap=20, fwd_spd=20, turn_spd=10
         )
-        # self.sbbot.SBB_charge_and_stop()
+        self.sbbot.SBB_charge_and_stop()
         self.advance_phase()
         # success so we return True
         return True
@@ -178,7 +181,8 @@ class RobotController:
         # self.engbot.beat_up()
         self.queue_channels.ball_detection_active_flag.set()
         self.engbot.eng_ball_centralise_and_pick()
-
+        self.queue_channels.ball_detection_active_flag.clear()
+        self.engbot.eng_throw_ball()
         # temp
         self.engbot._sdk.mecanum_stop()
 

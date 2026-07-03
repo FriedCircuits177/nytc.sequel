@@ -84,6 +84,7 @@ class Camera:
             if b64_data:
                 bgr_frame = self.b64_to_bgr_turbo(b64_data)
                 self.put_camera_frame(bgr_frame)
+
             else:
                 # print("IS NOT b64 DATA")
                 # Avoid aggressive spinning if the stream drops frames momentarily

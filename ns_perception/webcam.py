@@ -100,15 +100,21 @@ class WebcamProcessor:
         if frame is None:
             return None
 
+        # Ensure correct frame dimensions
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
         else:
             frame = frame.copy()
 
+        # FIX: Safer drawing layer lookup mapping to the correct lock
         draw_items = []
-        if hasattr(self.shared_state, "pose_draw_data"):
+        if (
+            hasattr(self.shared_state, "webcam_draw_data")
+            and self.shared_state.webcam_draw_data_lock
+        ):
             with self.shared_state.webcam_draw_data_lock:
-                draw_items = list(self.shared_state.webcam_draw_data)
+                if self.shared_state.webcam_draw_data is not None:
+                    draw_items = list(self.shared_state.webcam_draw_data)
 
         # --- UNIFIED DRAWING LAYER SYSTEM ---
         for item in draw_items:
@@ -163,6 +169,7 @@ class WebcamProcessor:
                 text_str = item.get("text", "")
                 font_scale = item.get("scale", 0.5)
 
+                # Text drop shadow
                 cv2.putText(
                     frame,
                     text_str,
@@ -184,7 +191,7 @@ class WebcamProcessor:
                     cv2.LINE_AA,
                 )
 
-        # Webcams already run natively in standard contiguous configurations
+        # Convert to DearPyGUI texture format (Normalized float32 RGBA)
         float_frame = frame.astype(np.float32)
         np.divide(float_frame, 255.0, out=self.output[:, :, :3])
         self.output[:, :, 3] = 1.0
@@ -192,32 +199,27 @@ class WebcamProcessor:
         return self.output.ravel()
 
     def mainloop(self):
-        last_frame_id = None
-
+        # FIX: Avoid comparing object IDs directly across dynamic thread mutations
+        # Track by capturing an internal deep-copy signature or basic loop cadence if tracking mutations fails
         while not self.queue_channels.kill_flag.is_set():
-            # logging.info("webcam processor is running")
+            frame = None
             with self.raw_camera_frame_lock:
                 if (
                     self.raw_camera_frame_lock
                     is self.shared_state.raw_webcam_camera_frame_lock
                 ):
-                    frame = self.shared_state.raw_webcam_camera_frame
+                    if self.shared_state.raw_webcam_camera_frame is not None:
+                        frame = self.shared_state.raw_webcam_camera_frame.copy()
                 else:
-                    frame = self.raw_camera_frame
+                    if self.raw_camera_frame is not None:
+                        frame = self.raw_camera_frame.copy()
 
-            # If there is no frame data yet, wait for the capture thread
             if frame is None:
-                time.sleep(0.005)
+                time.sleep(0.01)
                 continue
 
-            if id(frame) == last_frame_id:
-                time.sleep(0.001)
-                continue
-
-            last_frame_id = id(frame)
             processed = self.process(frame)
 
-            # Only update the final output channel if processing succeeded
             if processed is not None:
                 with self.camera_frame_lock:
                     self.camera_frame = processed
@@ -226,3 +228,6 @@ class WebcamProcessor:
                         is self.shared_state.webcam_camera_frame_lock
                     ):
                         self.shared_state.webcam_camera_frame = processed
+
+            # Match frame cadence to frame rate target (~30 FPS)
+            time.sleep(0.03)

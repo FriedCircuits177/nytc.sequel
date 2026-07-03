@@ -15,16 +15,16 @@ class BallDetector:
     ):
         self.queue_channels = QueueChannels
         self.shared_state = SharedState
-        self.KNOWN_WIDTH = 3  # diameter of the ball
+        self.KNOWN_WIDTH = 4  # diameter of the ball
         self.FOCAL_LENGTH = ns_shared.CAMERA_FOCAL_LENGTH
 
-    def get_ball_data(self, frame):
+    def get_ball_data(self, frame) -> dict:
         """
         Processes a frame to find a red ball.
         Returns: (x_error, distance, normalized_x) or (None, None, None)
         """
         if frame is None:
-            return None, None, None
+            return {}
 
         # 1. Blur to reduce high-frequency noise
         blurred = cv2.GaussianBlur(frame, (11, 11), 0)
@@ -43,8 +43,9 @@ class BallDetector:
         mask = mask1 + mask2
 
         # 4. Clean up the mask
-        mask = cv2.erode(mask, None, iterations=2)
-        mask = cv2.dilate(mask, None, iterations=2)
+        kernel = np.ones((3, 3), np.uint8)
+        mask = cv2.erode(mask, kernel, iterations=2)
+        mask = cv2.dilate(mask, kernel, iterations=2)
 
         # 5. Find contours
         contours, _ = cv2.findContours(
@@ -57,7 +58,7 @@ class BallDetector:
 
             # Get the minimum enclosing circle
             ((x, y), radius) = cv2.minEnclosingCircle(largest_contour)
-
+            # print(radius)
             # Filter out tiny noise blobs
             if radius > 10:
                 frame_width = frame.shape[1]
@@ -73,7 +74,8 @@ class BallDetector:
                 # Using the triangle similarity theorem: Distance = (TrueWidth * FocalLength) / PixelWidth
                 pixel_width = radius * 2
                 distance = (self.KNOWN_WIDTH * self.FOCAL_LENGTH) / pixel_width
-
+                logging.info("I PUT A FRAME IN!")
+                # return {}
                 return {
                     "x_error": x_error,
                     "distance": distance,
