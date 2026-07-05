@@ -1,10 +1,14 @@
+import json
 import logging
+import os
 import time
-from math import dist
+from math import asin, dist
+from turtle import width
 
 import cv2
 import numpy as np
 from ugot import ugot
+from ugot.src.http_client import upload_vision_picture
 
 import ns_shared
 
@@ -60,6 +64,126 @@ class RobotHardware:
             self.shared_state.peripheral_sbbot_status = (
                 ns_shared.PeripheralStatus.CONNECTED
             )
+
+    def mecanum_translate(self, vx, vy, omega, max_speed=80, max_rotation_speed=280):
+        self._sdk.mecanum_move_xyz(
+            int(vx * max_speed), int(vy * max_speed), int(omega * max_rotation_speed)
+        )
+
+    def navigate_to_delivery_zone(
+        self, target_color, MAX_SPEED=80, MAX_ROTATION_SPEED=280
+    ):
+        logging.info(f"Searching for the {target_color.name} delivery zone...")
+
+        zone_located = False
+        while not zone_located and not self.queue_channels.kill_flag.is_set():
+            with self.shared_state.block_detection_data_lock:
+                payload = self.shared_state.block_detection_data
+                visible_zones = (
+                    payload.get("zones", []) if isinstance(payload, dict) else []
+                )
+
+            # Find the massive zone matching our color
+            target_zone = None
+            for zone in visible_zones:
+                if zone["color"] == target_color:
+                    target_zone = zone
+                    break
+
+            if target_zone is not None:
+                cx, cy = target_zone["pixel_center"]
+                image_center_x = 320  # Adjust to your resolution
+                pixel_error = cx - image_center_x
+
+                # If the zone is centered enough, drive straight into it
+                if abs(pixel_error) < 30:
+                    logging.info("Zone centered! Driving in to deliver...")
+                    self.mecanum_translate(0, 0.6, 0, MAX_SPEED, MAX_ROTATION_SPEED)
+
+                    # Check if we have arrived (Zone bounding box takes up most of the bottom screen)
+                    x, y, w, h = target_zone["pixel_bounds"]
+                    if y + h > 450:  # Adjust threshold
+                        logging.info("Arrived at destination zone.")
+                        self._sdk.mecanum_stop()
+                        zone_located = True
+                else:
+                    # Rotate toward the zone center
+                    omega_turn = 0.15 if pixel_error > 0 else -0.15
+                    self.mecanum_translate(
+                        vx=0,
+                        vy=0,
+                        omega=omega_turn,
+                        max_speed=MAX_SPEED,
+                        max_rotation_speed=MAX_ROTATION_SPEED,
+                    )
+            else:
+                # Blindly scan/rotate until the large floor graphic is sighted
+                self.mecanum_translate(
+                    vx=0,
+                    vy=0,
+                    omega=0.2,
+                    max_speed=MAX_SPEED,
+                    max_rotation_speed=MAX_ROTATION_SPEED,
+                )
+
+            time.sleep(0.1)
+
+    def return_to_field(self, MAX_SPEED=80, MAX_ROTATION_SPEED=280):
+        self.mecanum_translate(0, -MAX_SPEED, 0)
+        time.sleep(0.5)
+        self.execution_j_turn()
+
+    def execution_j_turn(self, MAX_SPEED=40, MAX_ROTATION_SPEED=40):
+        """
+        Executes a high-speed 180-degree spin while translating backwards,
+        creating a sweeping J-turn style maneuver.
+        """
+        logging.info("Executing stylish 180-degree backward sweep!")
+
+        # 1. Fire the vectors: Negative Y (backwards) + Positive Omega (turn)
+        # Adjust the vy (-0.6) and omega (1.0) balances to make the arc tighter or wider
+        v_x = 0.0
+        v_y = -0.6  # Move backward at 60% power
+        omega = 1.0  # Spin fast
+
+        # We pulse this combination for a brief moment
+        # You will need to tune this sleep duration based on your battery level and carpet traction
+        pulse_duration = 0.65  # seconds
+
+        start_time = time.time()
+        while time.time() - start_time < pulse_duration:
+            self.mecanum_translate(v_x, v_y, omega, MAX_SPEED, MAX_ROTATION_SPEED)
+            time.sleep(0.02)  # Fast motor update cycle
+
+        # 2. Actively counter-brake to snap the robot out of the drift cleanly
+        # (Optional, but makes it look crisp and intentional)
+        self.mecanum_translate(0, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED)
+        self._sdk.mecanum_stop()
+        logging.info("Maneuver complete.")
+
+    def pivot_around_plough(
+        self, omega_turn, MAX_SPEED=80, MAX_ROTATION_SPEED=280, D=0.25
+    ):
+        """
+        Rotates the robot while counter-strafing so the pivot point
+        is at the front plough rather than the center of the chassis.
+        D = distance from robot center to the front plough center (in your SDK's unit scale)
+        Adjust this value based on your robot's physical dimensions
+
+        """
+        # Kinematics: To keep the front stable while spinning,
+        # we must strafe in the opposite direction of the turn radius swing
+        vx = 0.0
+        vy = -omega_turn * D
+
+        # Send these compensated vectors to your SDK drive helper
+        self.mecanum_translate(
+            vx=vx,
+            vy=vy,
+            omega=omega_turn,
+            max_speed=MAX_SPEED,
+            max_rotation_speed=MAX_ROTATION_SPEED,
+        )
 
     def map_and_clamp(self, value, in_min, in_max, out_min, out_max):
         # 1. Constrain the input value to the input range
@@ -532,5 +656,105 @@ class RobotHardware:
                 time.sleep(0.02)
                 continue
 
-    def eng_throw_ball(self):
-        pass
+    def eng_throw_ball(self, villain_scans=10, width_of_face=5):
+        self._sdk.mecanum_stop()
+        villain_data = []
+        center_x_data = []
+        width_data = []
+
+        while (not self.queue_channels.kill_flag.is_set()) and len(
+            villain_data
+        ) < villain_scans:
+            # make sure we get ten face readings. Maybe overkill, maybe shld tune.
+            face_data = self._sdk.get_face_recognition_total_info()
+
+            for _ in face_data:
+                if _[0] == "villain":
+                    villain_data.append(_)
+                    center_x_data.append(_[1])
+                    width_data.append(_[4])
+                    logging.info(
+                        f"Villain detected at ({_[1]},{_[2]}), {len(villain_data)}/{villain_scans}"
+                    )
+                    break
+            if not villain_data:
+                logging.warning("no villain detected bleh")
+                continue
+
+        # now that we found the guy
+        # now extract face data from sdk list (and get average center x)
+        # name (str): Name (or “Unknown” for unrecognized faces)
+        # center_x (float): Center x-coordinate
+        # center_y (float): Center y-coordinate
+        # height (float): Height
+        # width (float): Width
+        # area (float): Area
+
+        mean_center_x = sum(center_x_data) / len(center_x_data)
+        mean_width = sum(width_data) / len(width_data)
+        # now let's do some trig
+        distance = (width_of_face * ns_shared.CAMERA_FOCAL_LENGTH) / mean_width
+        angle_to_turn = int(asin(mean_width / distance))
+        logging.info(f"turning {angle_to_turn} degrees to face the face!")
+        self._sdk.mechanical_single_joint_control(1, angle_to_turn, 500)
+        time.sleep(1)
+        self._sdk.mechanical_single_joint_control(2, 45, 400)
+        time.sleep(0.2)
+        self._sdk.mechanical_single_joint_control(3, 50, 500)
+        time.sleep(0.2)
+        self._sdk.mechanical_clamp_release()
+
+    def register_face_from_file(self, name, local_file_path):
+        """
+        Registers a face using a pre-existing local JPEG file instead of
+        triggering the live camera countdown.
+
+        Args:
+            name (str): Face name to register.
+            local_file_path (str): Absolute or relative path to the local .jpg file.
+        """
+        # 1. Early exit if the file doesn't exist locally
+        if not os.path.exists(local_file_path):
+            logging.error(f"Local file not found: {local_file_path}")
+            return False
+
+        # 2. Check if the name is already registered in the robot's DB
+        names = self._sdk.VISION.face_recognition_get_all_names()
+        if names and name in names:
+            logging.info(f"Face [{name}] already exists in the system.")
+            return True
+
+        # Ensure models are loaded on the hardware side
+        self._sdk.load_models(["face_recognition"])
+
+        # 3. Mirror the SDK's exact naming convention for the backend
+        image_name = "{}.jpg".format(name)
+
+        logging.info(f"Uploading {local_file_path} to robot as '{image_name}'...")
+
+        # 4. Upload the local file directly using the SDK's internal network utility
+        upload_response = upload_vision_picture(
+            self._sdk.http_basic_url, local_file_path
+        )
+        if not upload_response or upload_response.get("code") != 0:
+            logging.error("Failed to upload the image to the robot server.")
+            return False
+
+        # 5. Commit the uploaded filename and mapping to the onboard model
+        response = self._sdk.VISION.face_recognition_insert_data(image_name, name)
+        if response is not None:
+            if response.code == 0:
+                logging.info(
+                    f"Face [{name}] registered successfully on the hardware model."
+                )
+                return True
+            else:
+                # The onboard model runs inference on the uploaded image here;
+                # if it can't find a clear bounding box for a face, it fails.
+                logging.error(
+                    f"Robot backend failed to detect a face in the image. Message: {response.msg}"
+                )
+                return False
+
+        logging.error("No response received from the face recognition database.")
+        return False

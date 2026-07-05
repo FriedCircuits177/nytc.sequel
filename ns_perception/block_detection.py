@@ -35,20 +35,19 @@ class BlockDetector:
         return frame
 
     def process_frame(self, frame):
-        """Performs optimized math tracking loops over the BGR robot frame for both colors."""
+        """Performs optimized math tracking loops over the BGR robot frame for both colors and zones."""
         if frame is None:
             return None
 
-        # Convert to HSV once per frame
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         detected_blocks = []
+        detected_zones = []  # New list to store zones
 
-        # Loop through all possible block colors defined in the Enum
         for color_enum in ns_shared.BlockColour:
             lower_bound, upper_bound = color_enum.value
             lower_bound = np.array(lower_bound)
             upper_bound = np.array(upper_bound)
-            # Mask and filter for the current color
+
             mask = cv2.inRange(hsv, lower_bound, upper_bound)
             mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.morphology_kernel)
 
@@ -57,12 +56,33 @@ class BlockDetector:
             )
 
             for cnt in contours:
-                if cv2.contourArea(cnt) < self.min_contour_area:
+                area = cv2.contourArea(cnt)
+                if area < self.min_contour_area:
                     continue
 
                 x, y, w, h = cv2.boundingRect(cnt)
-
                 aspect_ratio = float(w) / h
+
+                # --- ZONE CLASSIFICATION (Massive, wide rectangles) ---
+                # Adjust these thresholds based on how big the zones look from your camera
+                if area > 4000 and aspect_ratio > 1.4:
+                    moments = cv2.moments(cnt)
+                    if moments["m00"] == 0:
+                        continue
+                    cx = int(moments["m10"] / moments["m00"])
+                    cy = int(moments["m01"] / moments["m00"])
+
+                    detected_zones.append(
+                        {
+                            "color": color_enum,
+                            "pixel_center": (cx, cy),
+                            "pixel_bounds": (x, y, w, h),
+                            "area": area,
+                        }
+                    )
+                    continue  # Skip block processing if it's clearly a zone
+
+                # --- BLOCK CLASSIFICATION (Small, square cubes) ---
                 if not (0.75 <= aspect_ratio <= 1.35):
                     continue
 
@@ -72,20 +92,19 @@ class BlockDetector:
                 cx = int(moments["m10"] / moments["m00"])
                 cy = int(moments["m01"] / moments["m00"])
 
-                # Distance calculation via Triangle Similarity
                 distance_z = (self.cube_real_width * self.calibrated_focal_length) / w
 
-                # Append the payload with the explicit Enum classification tag
                 detected_blocks.append(
                     {
-                        "color": color_enum,  # e.g., BlockColour.RED or BlockColour.BLUE
+                        "color": color_enum,
                         "pixel_center": (cx, cy),
                         "pixel_bounds": (x, y, w, h),
                         "distance_z": distance_z,
                     }
                 )
 
-        return detected_blocks
+        # Return both structures bundled together
+        return {"blocks": detected_blocks, "zones": detected_zones}
 
     def update_data_queue(self, data):
         """Drops multi-color block payload data into the shared state."""

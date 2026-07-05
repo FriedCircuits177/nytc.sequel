@@ -68,6 +68,7 @@ class RobotController:
                     "apriltag_qrcode",
                 ]
             )
+            self.engbot.register_face_from_file("villain", ns_shared.VILLAIN_JPEG_PATH)
             self.engbot._sdk.mechanical_joint_control(0, 90, 0, 1000)
         except Exception as e:
             logger.error(f"ENGBot initialization failed: {e}. Running offline.")
@@ -184,6 +185,7 @@ class RobotController:
         self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
         self.engbot.eng_throw_ball()
+
         # temp
         self.engbot._sdk.mecanum_stop()
 
@@ -199,14 +201,164 @@ class RobotController:
         self.opcontrol_pose()
         self.advance_phase()
 
-    def phase4(self):
+    def phase4(self, MAX_SPEED=40, MAX_ROTATION_SPEED=40):
         self.queue_channels.block_detection_active_flag.set()
-        while not self.queue_channels.kill_flag.is_set():
-            with self.shared_state.block_detection_data_lock:
-                data = self.shared_state.block_detection_data
-            logging.info(len(data))
-        self.queue_channels.block_detection_active_flag.clear()
-        self.advance_phase()
+
+        CAMERA_HEIGHT = 480
+        CAPTURE_THRESHOLD_Y = CAMERA_HEIGHT - 50  # Bottom 50px capture zone
+        SEARCH_WINDOW = 70  # Frame-to-frame pixel tracking radius
+
+        # PID Tuning Parameter for Vision Tracking Loop (Proportional Gain)
+        # Adjust this value up if the robot tracks too sluggishly, down if it oscillates
+        Kp = 0.0015
+
+        delivery_schedule = [
+            {"color": ns_shared.BlockColour.BLUE, "qty": 2},
+            {"color": ns_shared.BlockColour.RED, "qty": 2},
+            {"color": ns_shared.BlockColour.RED, "qty": 1},
+        ]
+
+        for trip in delivery_schedule:
+            target_color = trip["color"]
+            target_qty = trip["qty"]
+            plough_inventory = []
+
+            logging.info(
+                f"Starting trip: Collecting {target_qty} {target_color.name} blocks."
+            )
+
+            # --- SUB-STATE 1: COLLECTION LOOP ---
+            locked_target = None  # Holds active target dictionary
+
+            while (
+                len(plough_inventory) < target_qty
+                and not self.queue_channels.kill_flag.is_set()
+            ):
+                # 1. Thread-safe retrieval of detection payload
+                with self.shared_state.block_detection_data_lock:
+                    detection_payload = self.shared_state.block_detection_data
+
+                if isinstance(detection_payload, dict):
+                    visible_blocks = detection_payload.get("blocks", [])
+                    visible_zones = detection_payload.get("zones", [])
+                else:
+                    visible_blocks = []
+                    visible_zones = []
+
+                # 2. Maintain Target Lock or Acquire New Target
+                tracked_block = None
+                if locked_target is not None:
+                    for block in visible_blocks:
+                        if block["color"] == target_color:
+                            dist = np.hypot(
+                                block["pixel_center"][0]
+                                - locked_target["pixel_center"][0],
+                                block["pixel_center"][1]
+                                - locked_target["pixel_center"][1],
+                            )
+                            if dist < SEARCH_WINDOW:
+                                tracked_block = block
+                                break
+
+                if tracked_block is None:
+                    valid_blocks = [
+                        b for b in visible_blocks if b["color"] == target_color
+                    ]
+                    if valid_blocks:
+                        tracked_block = min(valid_blocks, key=lambda b: b["distance_z"])
+                        logging.info("New target block locked via greedy depth search.")
+
+                locked_target = tracked_block
+                obstacle_x = None
+
+                # 3. Navigation Decision Engine
+                if locked_target is not None:
+                    cx, cy = locked_target["pixel_center"]
+
+                    # Check if path is blocked by an incorrect color block closer than the target
+                    path_is_blocked = False
+                    for block in visible_blocks:
+                        if (
+                            block["color"] != target_color
+                            and block["pixel_center"][1] > cy
+                        ):
+                            if (
+                                150 < block["pixel_center"][0] < 490
+                            ):  # Corridor pixel boundary
+                                path_is_blocked = True
+                                obstacle_x = block["pixel_center"][0]
+                                break
+
+                    if path_is_blocked and obstacle_x is not None:
+                        logging.warning("Path blocked! Strafing around obstacle...")
+                        strafe_direction = -1.0 if obstacle_x > 320 else 1.0
+                        self.engbot.mecanum_translate(
+                            strafe_direction, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED
+                        )
+                        time.sleep(0.3)  # Execute sidestep pulse
+                        continue
+
+                    # Check if block has reached collection threshold (Bottom 50px)
+                    if cy >= CAPTURE_THRESHOLD_Y:
+                        logging.info(
+                            "Block reached bottom threshold. Engaging intake plunge."
+                        )
+
+                        # Drive forward blindly to firmly capture block into the mechanism
+                        self.engbot.mecanum_translate(
+                            0, 1.0, 0, MAX_SPEED, MAX_ROTATION_SPEED
+                        )
+                        time.sleep(0.4)
+                        self.engbot._sdk.mecanum_stop()
+
+                        # Commit to internal inventory tracking
+                        plough_inventory.append(target_color)
+                        locked_target = None  # Wipe target lock for next acquisition
+                        time.sleep(0.5)  # Let video pipeline latency clear
+                        continue
+
+                    # --- APPROACH PROFILE (Proportional Vision Tracking) ---
+                    image_center_x = 320
+                    pixel_error = cx - image_center_x
+
+                    # Compute smooth turn using a P-control calculation
+                    # Cap the maximum value to avoid violent rotational snaps
+                    omega_turn = np.clip(pixel_error * Kp, -0.3, 0.3)
+
+                    # Drive forward while constantly tracking the target heading
+                    self.engbot.mecanum_translate(
+                        0, 0.5, omega_turn, MAX_SPEED, MAX_ROTATION_SPEED
+                    )
+
+                else:
+                    # No target visible on screen
+                    if len(plough_inventory) > 0:
+                        # CRITICAL: We have blocks in the plough! Rotate safely around the front bumper
+                        logging.info(
+                            "Target lost. Pivoting around plough to look for blocks..."
+                        )
+                        self.engbot.pivot_around_plough(
+                            0.2, MAX_SPEED, MAX_ROTATION_SPEED
+                        )
+                    else:
+                        # Plough is completely empty. We can spin faster on center axis safely
+                        logging.info(
+                            "Target lost. Spinning on center axis to look for blocks..."
+                        )
+                        self.engbot.mecanum_translate(
+                            0, 0, 0.2, MAX_SPEED, MAX_ROTATION_SPEED
+                        )
+
+                time.sleep(0.05)  # Match 20Hz cycle rate
+
+            # --- SUB-STATE 2: DELIVERY EXECUTIVE ---
+            logging.info(
+                f"Plough limit reached ({len(plough_inventory)} blocks). Proceeding to delivery zone."
+            )
+            self.engbot.navigate_to_delivery_zone(
+                target_color, MAX_SPEED, MAX_ROTATION_SPEED
+            )
+            self.engbot.return_to_field()
 
     def phase4a(self):
         # call opcontrol portion
