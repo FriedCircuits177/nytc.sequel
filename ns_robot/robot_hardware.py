@@ -758,3 +758,7 @@ class RobotHardware:
 
         logging.error("No response received from the face recognition database.")
         return False
+
+    def get_imu_heading(self):
+        data = self._sdk.SENSOR.getIMUSensorValue()
+        return data.yaw

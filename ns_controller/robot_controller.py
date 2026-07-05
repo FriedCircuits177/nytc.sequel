@@ -209,8 +209,11 @@ class RobotController:
         SEARCH_WINDOW = 70  # Frame-to-frame pixel tracking radius
 
         # PID Tuning Parameter for Vision Tracking Loop (Proportional Gain)
-        # Adjust this value up if the robot tracks too sluggishly, down if it oscillates
         Kp = 0.0015
+
+        # Conversion constant: Pixels to Degrees for IMU spatial anchoring
+        # Assuming standard ~60 degree horizontal camera FOV: 60 deg / 640 px = ~0.09375
+        PX_TO_DEGREES = 0.09375
 
         delivery_schedule = [
             {"color": ns_shared.BlockColour.BLUE, "qty": 2},
@@ -229,6 +232,9 @@ class RobotController:
 
             # --- SUB-STATE 1: COLLECTION LOOP ---
             locked_target = None  # Holds active target dictionary
+            backup_block_heading = (
+                None  # Stores absolute room heading of a secondary target
+            )
 
             while (
                 len(plough_inventory) < target_qty
@@ -274,6 +280,31 @@ class RobotController:
                 # 3. Navigation Decision Engine
                 if locked_target is not None:
                     cx, cy = locked_target["pixel_center"]
+
+                    # --- VISUAL IMU MEMORY SNAPSHOT ---
+                    # While driving toward our primary target, look out for other blocks of the same color
+                    # --- VISUAL IMU MEMORY SNAPSHOT (UPDATED FOR CLOSER BLOCK PRIORITIZATION) ---
+                    # Filter out the current locked target, keeping only other blocks of the same color
+                    backup_candidates = [
+                        b
+                        for b in visible_blocks
+                        if b["color"] == target_color
+                        and b["pixel_center"] != locked_target["pixel_center"]
+                    ]
+
+                    if backup_candidates:
+                        # Sort the remaining candidates so the one with the smallest distance_z is first
+                        closest_backup = min(
+                            backup_candidates, key=lambda b: b["distance_z"]
+                        )
+
+                        bx, _ = closest_backup["pixel_center"]
+                        pixel_offset_backup = bx - 320
+                        relative_angle = pixel_offset_backup * PX_TO_DEGREES
+
+                        # Store the absolute field position of the NEXT NEAREST block
+                        current_imu = self.engbot.get_imu_heading()
+                        backup_block_heading = current_imu + relative_angle
 
                     # Check if path is blocked by an incorrect color block closer than the target
                     path_is_blocked = False
@@ -322,7 +353,6 @@ class RobotController:
                     pixel_error = cx - image_center_x
 
                     # Compute smooth turn using a P-control calculation
-                    # Cap the maximum value to avoid violent rotational snaps
                     omega_turn = np.clip(pixel_error * Kp, -0.3, 0.3)
 
                     # Drive forward while constantly tracking the target heading
@@ -331,23 +361,56 @@ class RobotController:
                     )
 
                 else:
-                    # No target visible on screen
-                    if len(plough_inventory) > 0:
-                        # CRITICAL: We have blocks in the plough! Rotate safely around the front bumper
-                        logging.info(
-                            "Target lost. Pivoting around plough to look for blocks..."
-                        )
-                        self.engbot.pivot_around_plough(
-                            0.2, MAX_SPEED, MAX_ROTATION_SPEED
-                        )
+                    # --- SEARCH OR SPIN PHASE (No target currently visible) ---
+                    if backup_block_heading is not None:
+                        # Leverage IMU memory spatial map to rotate back toward the next block
+                        current_imu = self.engbot.get_imu_heading()
+                        imu_error = backup_block_heading - current_imu
+
+                        # Normalize angle error between -180 and 180
+                        imu_error = (imu_error + 180) % 360 - 180
+
+                        if abs(imu_error) > 5.0:
+                            logging.info(
+                                f"Target lost. Navigating to saved IMU position: {backup_block_heading:.1f}°"
+                            )
+                            omega_memory_turn = 0.2 if imu_error > 0 else -0.2
+
+                            # Decide whether to spin on center or pivot around the bumper
+                            if len(plough_inventory) > 0:
+                                self.engbot.pivot_around_plough(
+                                    omega_memory_turn, MAX_SPEED, MAX_ROTATION_SPEED
+                                )
+                            else:
+                                self.engbot.mecanum_translate(
+                                    0,
+                                    0,
+                                    omega_memory_turn,
+                                    MAX_SPEED,
+                                    MAX_ROTATION_SPEED,
+                                )
+                        else:
+                            # We are facing the memory target direction; clear it and let visual loop track
+                            logging.info(
+                                "Arrived at remembered target orientation. Re-engaging camera tracking."
+                            )
+                            backup_block_heading = None
                     else:
-                        # Plough is completely empty. We can spin faster on center axis safely
-                        logging.info(
-                            "Target lost. Spinning on center axis to look for blocks..."
-                        )
-                        self.engbot.mecanum_translate(
-                            0, 0, 0.2, MAX_SPEED, MAX_ROTATION_SPEED
-                        )
+                        # Blind fallback tracking if both visual system and memory are dry
+                        if len(plough_inventory) > 0:
+                            logging.info(
+                                "Target lost. Pivoting around plough to look for blocks..."
+                            )
+                            self.engbot.pivot_around_plough(
+                                0.2, MAX_SPEED, MAX_ROTATION_SPEED
+                            )
+                        else:
+                            logging.info(
+                                "Target lost. Spinning on center axis to look for blocks..."
+                            )
+                            self.engbot.mecanum_translate(
+                                0, 0, 0.2, MAX_SPEED, MAX_ROTATION_SPEED
+                            )
 
                 time.sleep(0.05)  # Match 20Hz cycle rate
 
@@ -358,7 +421,13 @@ class RobotController:
             self.engbot.navigate_to_delivery_zone(
                 target_color, MAX_SPEED, MAX_ROTATION_SPEED
             )
-            self.engbot.return_to_field()
+            time.sleep(0.25)
+            if not delivery_schedule.index(trip) == len(delivery_schedule) - 1:
+                self.engbot.return_to_field()
+
+        logger.info("Phase 4 completed successfully")
+        self.engbot._sdk.mecanum_stop()
+        self.advance_phase(keep_activated=False)
 
     def phase4a(self):
         # call opcontrol portion
@@ -467,7 +536,7 @@ class RobotController:
             time.sleep(0.02)
         self.engbot._sdk.mecanum_stop()
 
-    def advance_phase(self):
+    def advance_phase(self, keep_activated=False):
         with self.shared_state.phase_state.lock:
             if self.shared_state.phase_state.current_phase_index is None:
                 self.shared_state.phase_state.current_phase_index = 0
@@ -479,7 +548,8 @@ class RobotController:
                 self.shared_state.phase_state.phase_queue
             ):
                 self.shared_state.phase_state.current_phase_index = None
-            self.shared_state.phase_state.is_running.clear()
+            if not keep_activated:
+                self.shared_state.phase_state.is_running.clear()
 
     def opcontrol_legacy(self):
         self.max_rpm = 360
