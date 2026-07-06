@@ -25,7 +25,7 @@ class MediaPipePoseRecog:
         self.shared_state = SharedState
 
         # Deadzone threshold
-        self.DEADZONE = 0.1
+        self.DEADZONE = 0.15
 
         # Keep track of state to avoid spamming zero tuples endlessly
         self.sent_zero_last = False
@@ -115,13 +115,15 @@ class MediaPipePoseRecog:
 
             # --- ADD DEADZONE BAND TARGET PRIMITIVE ---
             # Normalized values spanning completely across the screen width (X: 0.0 to 1.0)
+            # --- ADD DEADZONE BAND TARGET PRIMITIVE ---
             new_draw_data.append(
                 {
                     "type": "rectangle",
                     "top_left": (0.0, deadzone_top),
                     "bottom_right": (1.0, deadzone_bottom),
                     "color": COLOR_BAND,
-                    "alpha": 0.50,  # 50% opacity target request
+                    "alpha": 0.50,       # 50% opacity target request
+                    "thickness": -1,     # FIX: Explicitly enforce solid fill setting
                 }
             )
 

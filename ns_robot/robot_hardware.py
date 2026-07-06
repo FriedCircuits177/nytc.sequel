@@ -163,28 +163,40 @@ class RobotHardware:
         self._sdk.mecanum_stop()
         logging.info("Maneuver complete.")
 
-    def pivot_around_plough(
-        self, omega_turn, MAX_SPEED=80, MAX_ROTATION_SPEED=280, D=15
-    ):
+    def pivot_around_plough(self, deg_s, MAX_SPEED=40, MAX_ROTATION_SPEED=120):
         """
-        Rotates the robot while counter-strafing so the pivot point
-        is at the front plough rather than the center of the chassis.
-        D = distance from robot center to the front plough center (in your SDK's unit scale)
-        Adjust this value based on your robot's physical dimensions
-
+        Pivots the robot cleanly around the front plough (D cm forward from center).
+        Accepts target rotation velocity directly in degrees per second (deg_s).
         """
-        # Kinematics: To keep the front stable while spinning,
-        # we must strafe in the opposite direction of the turn radius swing
-        vx = 0.0
-        vy = -omega_turn * D
+        # Physical distance from the chassis center to the front plough tool in cm
+        D = 25.0
 
-        # Send these compensated vectors to your SDK drive helper
+        # 1. Calculate the clean rotation ratio for the SDK
+        omega_ratio = deg_s / MAX_ROTATION_SPEED
+
+        # 2. Kinematics Fix: To keep a front point pinned, the center must strafe (v_x).
+        # Convert degrees/s to radians/s to calculate physical target velocity (cm/s)
+        rad_s = math.radians(deg_s)
+        target_vx_cms = rad_s * D
+
+        # Map the physical strafe speed to the SDK's native -1.0 to 1.0 ratio
+        v_x_ratio = target_vx_cms / MAX_SPEED
+        v_y_ratio = 0.0  # Explicitly 0! No forward/backward velocity needed.
+
+        # 3. Dynamic Ratio Guard
+        # If the requested deg_s requires a strafe faster than MAX_SPEED can handle,
+        # scale both parameters down together to protect the geometric pivot point.
+        max_val = max(abs(v_x_ratio), abs(omega_ratio))
+        if max_val > 1.0:
+            v_x_ratio /= max_val
+            omega_ratio /= max_val
+            logging.warning("Requested rotation speed capped to preserve physical plough pivot limits.")
+
+        # 4. Ship the balanced ratios directly to your translation engine
+        logging.info(f"Plough Pivot -> Target: {deg_s}°/s | vx_ratio: {v_x_ratio:.3f}, omega_ratio: {omega_ratio:.3f}")
+        logging.info(f"IMU: {self.get_imu_heading()}")
         self.mecanum_translate(
-            vx=vx,
-            vy=vy,
-            omega=omega_turn,
-            max_speed=MAX_SPEED,
-            max_rotation_speed=MAX_ROTATION_SPEED,
+            v_x_ratio, v_y_ratio, omega_ratio, MAX_SPEED, MAX_ROTATION_SPEED
         )
 
     def map_and_clamp(self, value, in_min, in_max, out_min, out_max):

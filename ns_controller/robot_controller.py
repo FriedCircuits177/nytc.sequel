@@ -31,7 +31,7 @@ class RobotController:
         self.sbbot = sbbot
 
         self.async_setup_engbot()
-        self.async_setup_sbbot()
+        #self.async_setup_sbbot()
 
     # def _check(self):
     #     """Checks if the frontend requested a stop.
@@ -91,7 +91,11 @@ class RobotController:
         """Listens to the process_manager and executes ordered autonomous sequences."""
         while not self.queue_channels.kill_flag.is_set():
             if not self.shared_state.phase_state.is_running.is_set():
-                self.sbbot._sdk.balance_start_balancing()
+                try:
+                    self.sbbot._sdk.balance_start_balancing()
+                except Exception as e:
+                    pass
+                    #logging.exception(e)
                 time.sleep(0.02)
                 continue
 
@@ -181,6 +185,11 @@ class RobotController:
         # self.engbot.search_villain()
         # # align and throw at pos 1,2,3
         # self.engbot.beat_up()
+
+        self.engbot.pivot_around_plough(90)
+        time.sleep(1)
+        self.engbot._sdk.mecanum_stop()
+        return
         self.queue_channels.ball_detection_active_flag.set()
         self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
@@ -460,28 +469,25 @@ class RobotController:
                 break
 
             try:
-                # BLOCK HERE until MediaPipe produces a new calculated data payload
-                # Use a small timeout so the loop can cleanly exit if the kill flag gets set
+                # BLOCK HERE until MediaPipe produces a new data payload
                 x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
             except queue.Empty:
+                # FIX: If the queue is dry, actively stop the drivetrain instead of ignoring it
+                self.engbot._sdk.mecanum_stop()
                 continue
 
-            print(f"{x_val},{y_val},{r_val}")
+            print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
 
             # Convert float vectors into native target SDK integers
-            x_movement = int(
-                self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed)
-            )
-            y_movement = int(
-                self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed)
-            )
-            r_movement = int(
-                self.engbot.map_and_clamp(
-                    r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
-                )
-            )
+            x_movement = int(self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed))
+            y_movement = int(self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed))
+            r_movement = int(self.engbot.map_and_clamp(r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed))
 
-            self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+            # Check for explicit deadzone data signature
+            if x_movement == 0 and y_movement == 0 and r_movement == 0:
+                self.engbot._sdk.mecanum_stop()
+            else:
+                self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
 
         self.engbot._sdk.mecanum_stop()
         self.queue_channels.pose_recog_active_flag.clear()
