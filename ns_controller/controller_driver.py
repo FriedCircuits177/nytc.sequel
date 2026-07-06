@@ -1,5 +1,6 @@
 import logging
 import os
+import queue
 import time
 
 import pygame
@@ -80,15 +81,57 @@ class PS4ControllerDriver:
         return (not current) and last
 
     def joystick_flag_send(self):
-        """Checks edge transitions to switch flags on release."""
-        if self.check_if_released("cross"):
-            self.queue_channels.gui_stop_flag.set()
-        elif self.check_if_released("circle"):
-            self.queue_channels.gui_start_flag.set()
+        """Checks edge transitions to switch flags and modify phase state on button release."""
+        state = self.shared_state.phase_state
+
+        # --- CIRCLE BUTTON: START/PLAY PHASE ---
+        if self.check_if_released("circle"):
+            with state.lock:
+                if len(state.phase_queue) > 0:
+                    if (
+                        state.current_phase_index is None
+                        or state.current_phase_index >= len(state.phase_queue)
+                    ):
+                        state.current_phase_index = 0
+                    state.is_running.set()
+                    logger.info("Controller Event: CIRCLE -> Pipeline STARTED")
+
+        # --- SQUARE BUTTON: STOP PHASE ---
+        elif self.check_if_released("square"):
+            with state.lock:
+                state.is_running.clear()
+            self.queue_channels.force_stop_phase_flag.set()
+            logger.info("Controller Event: SQUARE -> Pipeline STOPPED")
+
+        # --- D-LEFT ARROW: DECREMENT TARGET PHASE INDEX ---
         elif self.check_if_released("d_left"):
-            self.queue_channels.gui_left_flag.set()
+            with state.lock:
+                # Only allow navigation if the automation pipeline isn't actively running
+                if not state.is_running.is_set() and state.phase_queue:
+                    if state.current_phase_index is None:
+                        state.current_phase_index = 0
+                    else:
+                        state.current_phase_index = max(
+                            0, state.current_phase_index - 1
+                        )
+                    logger.info(
+                        f"Controller Event: D-Left -> Target Index: {state.current_phase_index}"
+                    )
+
+        # --- D-RIGHT ARROW: INCREMENT TARGET PHASE INDEX ---
         elif self.check_if_released("d_right"):
-            self.queue_channels.gui_right_flag.set()
+            with state.lock:
+                # Only allow navigation if the automation pipeline isn't actively running
+                if not state.is_running.is_set() and state.phase_queue:
+                    if state.current_phase_index is None:
+                        state.current_phase_index = 0
+                    else:
+                        state.current_phase_index = min(
+                            len(state.phase_queue) - 1, state.current_phase_index + 1
+                        )
+                    logger.info(
+                        f"Controller Event: D-Right -> Target Index: {state.current_phase_index}"
+                    )
 
         # FIXED: Create a brand new copy snapshot here every time
         self.controller_buttons_last = self.controller_buttons.copy()
@@ -121,17 +164,32 @@ class PS4ControllerDriver:
                 #     )
 
             try:
-                if self.queue_channels.vibrate_flag.is_set():
-                    self.joystick.rumble(1.0, 0.0, 250)
-                    self.queue_channels.vibrate_flag.clear()
+                try:
+                    # Check if any backend function or thread requested a custom rumble
+                    small_mag, large_mag, duration = (
+                        self.queue_channels.vibrate_flag.get_nowait()
+                    )
+                    # Pygame expects float values between 0.0 and 1.0
+                    self.joystick.rumble(small_mag, large_mag, duration)
+                except queue.Empty:
+                    pass  # No custom rumble requests in queue
 
                 pygame.event.pump()  # Flushes the OS event message registers
 
                 # 1. Capture Analog Stick Movements
-                raw_r2 = self.joystick.get_axis(4)
+                raw_l2 = self.joystick.get_axis(4)
                 raw_x = self.joystick.get_axis(0)
                 raw_y = -self.joystick.get_axis(1)
                 raw_r = -self.joystick.get_axis(2)
+
+                if raw_l2 > 0.4:
+                    # Scale intensity linearly with trigger pressure
+                    intensity = (
+                        (raw_l2 + 1.0) / 2.0
+                    ) * 0.4  # Max 25% strength for subtlety
+                    # Small motor = high frequency (buzzing), Large motor = low frequency (thumping)
+                    self.joystick.rumble(intensity, 0.0, 50)
+
                 # print(f"{raw_x},{raw_y},{raw_r}")
                 # 2. Process math limits
                 x_vel = self.filter_deadzone(raw_x)
@@ -150,14 +208,14 @@ class PS4ControllerDriver:
                 self.controller_buttons["d_right"] = bool(self.joystick.get_button(14))
 
                 # Dispatches releases checking old states vs new states
-                # self.joystick_flag_send()
+                self.joystick_flag_send()
 
                 # 3. Safely update coordinates in shared state
                 with self.shared_state.drive_command_lock:
                     self.shared_state.drive_x = x_vel
                     self.shared_state.drive_y = y_vel
                     self.shared_state.drive_r = r_vel
-                    self.shared_state.drive_r2 = raw_r2
+                    self.shared_state.drive_l2 = raw_l2
                     self.shared_state.controller_buttons = (
                         self.controller_buttons.copy()
                     )

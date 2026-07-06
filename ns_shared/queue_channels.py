@@ -8,7 +8,7 @@ logger = logging.Logger(__name__)
 class QueueChannels:
     def __init__(self):
         self.kill_flag = threading.Event()
-        self.vibrate_flag = threading.Event()
+
         self.force_stop_phase_flag = threading.Event()
 
         self.turbo_drive_flag = threading.Event()
@@ -27,6 +27,7 @@ class QueueChannels:
 
         # self.block_detection_data = queue.Queue(1)
         # self.ball_detection_data = queue.Queue(1)
+        self.vibrate_flag = queue.Queue()
         self.pose_drive = queue.Queue(1)
 
         # these 3 handle disconnect/connect commands

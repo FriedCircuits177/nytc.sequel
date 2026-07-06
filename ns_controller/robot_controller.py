@@ -31,7 +31,7 @@ class RobotController:
         self.sbbot = sbbot
 
         self.async_setup_engbot()
-        #self.async_setup_sbbot()
+        # self.async_setup_sbbot()
 
     # def _check(self):
     #     """Checks if the frontend requested a stop.
@@ -95,7 +95,7 @@ class RobotController:
                     self.sbbot._sdk.balance_start_balancing()
                 except Exception as e:
                     pass
-                    #logging.exception(e)
+                    # logging.exception(e)
                 time.sleep(0.02)
                 continue
 
@@ -186,10 +186,10 @@ class RobotController:
         # # align and throw at pos 1,2,3
         # self.engbot.beat_up()
 
-        self.engbot.pivot_around_plough(90)
-        time.sleep(1)
-        self.engbot._sdk.mecanum_stop()
-        return
+        # self.engbot.pivot_around_plough(90)
+        # time.sleep(1)
+        # self.engbot._sdk.mecanum_stop()
+        # return
         self.queue_channels.ball_detection_active_flag.set()
         self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
@@ -203,12 +203,12 @@ class RobotController:
 
     def phase2a(self):
         # call opcontrol portion
-        self.opcontrol()
-        self.advance_phase()
+        if self.opcontrol():
+            self.advance_phase()
 
     def phase3(self):
-        self.opcontrol_pose()
-        self.advance_phase()
+        if self.opcontrol_pose():
+            self.advance_phase()
 
     def phase4(self, MAX_SPEED=40, MAX_ROTATION_SPEED=40):
         self.queue_channels.block_detection_active_flag.set()
@@ -251,10 +251,12 @@ class RobotController:
                 and not self.queue_channels.kill_flag.is_set()
             ):
                 # 1. Thread-safe retrieval of detection payload
+
                 with self.shared_state.phase_state.lock:
-                    if not self.shared_state.phase_state.is_running:
+                    # FIX 3: Added missing .is_set() and changed break to return to prevent accidental delivery triggers
+                    if not self.shared_state.phase_state.is_running.is_set():
                         self.engbot._sdk.mecanum_stop()
-                        break
+                        return
                 with self.shared_state.block_detection_data_lock:
                     detection_payload = self.shared_state.block_detection_data
 
@@ -445,8 +447,8 @@ class RobotController:
 
     def phase4a(self):
         # call opcontrol portion
-        self.opcontrol()
-        self.advance_phase()
+        if self.opcontrol():
+            self.advance_phase()
 
     def you_can_crush_it_as_dry_as_a_bone(self):
         logging.info("you can kiss it you can break all the rules")
@@ -457,33 +459,33 @@ class RobotController:
         self.max_speed = 40  # cm/s
         self.max_rotation_speed = 120
 
-        # Ensure the queue starts clean
-        while not self.queue_channels.pose_drive.empty():
-            try:
-                self.queue_channels.pose_drive.get_nowait()
-            except Exception:
-                break
-
         while not self.queue_channels.kill_flag.is_set():
+            # FIX 2: Gracefully exit and preserve phase position if stopped
             if not self.shared_state.phase_state.is_running.is_set():
-                break
+                self.engbot._sdk.mecanum_stop()
+                self.queue_channels.pose_recog_active_flag.clear()
+                return False
 
             try:
-                # BLOCK HERE until MediaPipe produces a new data payload
                 x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
             except queue.Empty:
-                # FIX: If the queue is dry, actively stop the drivetrain instead of ignoring it
                 self.engbot._sdk.mecanum_stop()
                 continue
 
             print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
 
-            # Convert float vectors into native target SDK integers
-            x_movement = int(self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed))
-            y_movement = int(self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed))
-            r_movement = int(self.engbot.map_and_clamp(r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed))
+            x_movement = int(
+                self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed)
+            )
+            y_movement = int(
+                self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed)
+            )
+            r_movement = int(
+                self.engbot.map_and_clamp(
+                    r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                )
+            )
 
-            # Check for explicit deadzone data signature
             if x_movement == 0 and y_movement == 0 and r_movement == 0:
                 self.engbot._sdk.mecanum_stop()
             else:
@@ -491,15 +493,20 @@ class RobotController:
 
         self.engbot._sdk.mecanum_stop()
         self.queue_channels.pose_recog_active_flag.clear()
+        return True
 
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""
         if joystick_control:
-            self.queue_channels.vibrate_flag.set()
+            self.queue_channels.vibrate_flag.put((0.5, 0.0, 500))
         self.zoom = False
+
         while not self.queue_channels.kill_flag.is_set():
-            # print("OPCONTROL IS ALIVE")
-            # self._check()  # Keeps your local manual cancellation capability active inside opcontrol loops
+            # FIX 1: If the pipeline is stopped/paused, break out immediately without advancing
+            if not self.shared_state.phase_state.is_running.is_set():
+                self.engbot._sdk.mecanum_stop()
+                return False
+
             self.max_speed = 80  # cm/s dumb sdk lol
             self.max_rotation_speed = 280
             self.max_zoom_rpm = 300
@@ -508,7 +515,7 @@ class RobotController:
                 x_movement = self.shared_state.drive_x
                 y_movement = self.shared_state.drive_y
                 r_movement = self.shared_state.drive_r
-                r2 = self.shared_state.drive_r2
+                r2 = self.shared_state.drive_l2
 
             if r2 > 0.4 and not self.zoom:
                 self.engbot._sdk.mecanum_motor_control(
@@ -525,8 +532,10 @@ class RobotController:
             elif r2 < 0.4 and self.zoom:
                 self.zoom = False
 
+            # Exited via Cross button intentionally
             if buttons["cross"]:
                 break
+
             x_movement = int(
                 self.engbot.map_and_clamp(
                     x_movement, -1, 1, -self.max_speed, self.max_speed
@@ -545,7 +554,9 @@ class RobotController:
 
             self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
             time.sleep(0.02)
+
         self.engbot._sdk.mecanum_stop()
+        return True
 
     def advance_phase(self, keep_activated=False):
         with self.shared_state.phase_state.lock:

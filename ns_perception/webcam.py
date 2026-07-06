@@ -22,7 +22,7 @@ class Webcam:
         self.camera_frame = camera_frame
         self.camera_frame_lock = camera_frame_lock
 
-        self.capture = cv2.VideoCapture(1, cv2.CAP_DSHOW)
+        self.capture = cv2.VideoCapture(0, cv2.CAP_DSHOW)
         self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
@@ -89,8 +89,59 @@ class WebcamProcessor:
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
 
-        np.divide(frame, 255.0, out=self.output[:, :, :3], casting="unsafe")
+        # --- NEW OVERLAY RENDERING BLOCK ---
+        # Fetch a local snapshot of the pose draw primitives safely
+        with self.shared_state.webcam_draw_data_lock:
+            draw_primitives = list(self.shared_state.webcam_draw_data)
 
+        # Draw each primitive onto the frame before converting it for the GUI
+        for primitive in draw_primitives:
+            p_type = primitive.get("type")
+
+            if p_type == "rectangle":
+                # Convert normalized coordinates (0.0 to 1.0) back to actual pixel coordinates
+                top_left_raw = primitive["top_left"]
+                bottom_right_raw = primitive["bottom_right"]
+                pt1 = (
+                    int(top_left_raw[0] * self.width),
+                    int(top_left_raw[1] * self.height),
+                )
+                pt2 = (
+                    int(bottom_right_raw[0] * self.width),
+                    int(bottom_right_raw[1] * self.height),
+                )
+
+                color = primitive[
+                    "color"
+                ]  # BGR or RGB depending on webcam frame format
+                thickness = primitive["thickness"]
+
+                # Check for alpha opacity request
+                alpha_val = primitive.get("alpha", 1.0)
+                if alpha_val < 1.0:
+                    overlay = frame.copy()
+                    cv2.rectangle(overlay, pt1, pt2, color, thickness)
+                    cv2.addWeighted(
+                        overlay, alpha_val, frame, 1.0 - alpha_val, 0, frame
+                    )
+                else:
+                    cv2.rectangle(frame, pt1, pt2, color, thickness)
+
+            elif p_type == "circle":
+                center_raw = primitive["center"]
+                center = (
+                    int(center_raw[0] * self.width),
+                    int(center_raw[1] * self.height),
+                )
+                radius = primitive["radius"]
+                color = primitive["color"]
+                thickness = primitive["thickness"]
+
+                cv2.circle(frame, center, radius, color, thickness)
+        # ------------------------------------
+
+        # Original logic: Normalise and push to DearPyGUI texture format
+        np.divide(frame, 255.0, out=self.output[:, :, :3], casting="unsafe")
         self.output[:, :, 3] = 1.0
 
         return self.output.copy()
@@ -112,15 +163,24 @@ class WebcamProcessor:
                 time.sleep(0.001)
                 continue
 
+            # CRITICAL FIX: Make a unique copy of the frame array!
+            # Since OpenCV operations above (cv2.rectangle/circle) modify 'frame' IN-PLACE,
+            # the underlying object id(frame) would remain the same, causing this loop to
+            # falsely skip frames thinking it's the exact same stale data.
+            frame_copy = frame.copy()
+
             if id(frame) == last_frame_id:
-                time.sleep(0.001)
-                continue
+                # If the frame hasn't updated, we still check if overlays have changed
+                # to keep rendering smooth.
+                pass
 
             last_frame_id = id(frame)
 
-            processed = self.process(frame)
+            processed = self.process(frame_copy)
 
             with self.camera_frame_lock:
                 self.camera_frame = processed
                 if self.camera_frame_lock is self.shared_state.webcam_camera_frame_lock:
                     self.shared_state.webcam_camera_frame = processed
+
+            time.sleep(0.01)  # Keep CPU load nominal

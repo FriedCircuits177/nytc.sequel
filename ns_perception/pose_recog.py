@@ -30,6 +30,13 @@ class MediaPipePoseRecog:
         # Keep track of state to avoid spamming zero tuples endlessly
         self.sent_zero_last = False
 
+        # --- NEW GESTURE DEBOUNCING VARIABLES ---
+        self.crossed_hands_counter = 0
+        # Require ~15 consecutive frames of holding the cross before triggering (approx 0.5 seconds at 30fps)
+        self.CROSSED_HANDS_THRESHOLD = 15
+        # Spatial margin to ensure a deliberate cross (normalized coordinates)
+        self.CROSS_MARGIN = 0.04
+
     def _result_callback(
         self,
         result: PoseLandmarkerResult,
@@ -64,29 +71,54 @@ class MediaPipePoseRecog:
             l_active = abs(left_hand_up) > self.DEADZONE
             r_active = abs(right_hand_up) > self.DEADZONE
 
-            # 3. Check for the Crossed Hands gesture inside the deadzone
-            # If neither hand is extended vertically, check if they cross horizontally
-            hands_crossed = False
+            # 2. Evaluate deadzones
+            l_active = abs(left_hand_up) > self.DEADZONE
+            # ... (keep your existing active check logic) ...
+
+            # 2. Evaluate deadzones
+            l_active = abs(left_hand_up) > self.DEADZONE
+            r_active = abs(right_hand_up) > self.DEADZONE
+
+            # 3. Robust Crossed Hands Evaluation (FIXED COORDINATE DIRECTION)
+            hands_crossed_instantly = False
+
             if not l_active and not r_active:
-                # Left wrist X is greater than Right wrist X -> they have crossed over
-                if l_wrist.x > r_wrist.x:
-                    hands_crossed = True
+                # FIX: Because video is mirrored/unmirrored in screen coordinates,
+                # the Right Wrist X must cross past the Left Wrist X to register a true cross.
+                if r_wrist.x > (l_wrist.x + self.CROSS_MARGIN):
+                    hands_crossed_instantly = True
+
+            # Temporal filtering: Require the posture to be held over multiple frames
+            if hands_crossed_instantly:
+                self.crossed_hands_counter += 1
+            else:
+                self.crossed_hands_counter = 0
 
             # 4. Handle data routing conditions based on the gestures
-            # if hands_crossed:
-            #     # Target action when hands are crossed inside the deadzone
-            #     logger.info("Gesture Detected: Hands Crossed inside Deadzone!")
-            #     # For example: Trigger a stop command, clear states, or set a specific flag
-            #     self._push_to_robot_queue(0.0, 0.0, 0.0)
-            #     self.shared_state.phase_state.is_running.clear()
+            if self.crossed_hands_counter >= self.CROSSED_HANDS_THRESHOLD:
+                logger.info(
+                    "Gesture Confirmed: Hands Crossed! Initiating Exit Sequence."
+                )
+                self._push_to_robot_queue(0.0, 0.0, 0.0)
 
+                if hasattr(self.shared_state, "phase_state") and hasattr(
+                    self.shared_state.phase_state, "is_running"
+                ):
+                    self.shared_state.phase_state.is_running.clear()
+                with self.shared_state.webcam_draw_data_lock:
+                    self.shared_state.webcam_draw_data = []
+                return
+
+            elif hands_crossed_instantly:
+                if not self.sent_zero_last:
+                    self._push_to_robot_queue(0.0, 0.0, 0.0)
+                    self.sent_zero_last = True
             elif not l_active and not r_active:
-                # Normal deadzone behavior (hands up neutral, not crossed)
                 if not self.sent_zero_last:
                     self._push_to_robot_queue(0.0, 0.0, 0.0)
                     self.sent_zero_last = True
             else:
-                # Driving behavior (active extensions)
+                # Driving behavior
                 scale = 1.0 / 0.35
                 drive_y = ((left_hand_up + right_hand_up) / 2.0) * scale
                 drive_r = (right_hand_up - left_hand_up) * scale
@@ -104,11 +136,21 @@ class MediaPipePoseRecog:
             deadzone_top = avg_shoulder_y - self.DEADZONE
             deadzone_bottom = avg_shoulder_y + self.DEADZONE
 
-            # Define Theme Primitives
-            COLOR_ACTIVE = (0, 255, 0)  # Bright Green
-            COLOR_DEADZONE = (255, 140, 0)  # Amber/Orange
-            COLOR_ANCHOR = (0, 255, 255)  # Cyan
-            COLOR_BAND = (60, 60, 60)  # Sleek Dark Gray Band for the deadzone overlay
+            if hands_crossed_instantly:
+                COLOR_BAND = (
+                    255,
+                    0,
+                    0,
+                )  # Turn the deadzone band Red (BGR format) to warn of exit
+                COLOR_ANCHOR = (255, 0, 0)  # Turn dots red
+                COLOR_ACTIVE = (255, 0, 0)
+                COLOR_DEADZONE = (255, 0, 0)
+            else:
+                # Your original beautiful color palette
+                COLOR_ACTIVE = (0, 255, 0)  # Bright Green
+                COLOR_DEADZONE = (255, 140, 0)  # Amber/Orange
+                COLOR_ANCHOR = (0, 255, 255)  # Cyan
+                COLOR_BAND = (60, 60, 60)  # Sleek Dark Gray Band
 
             # Initialize rendering queue array
             new_draw_data = []
@@ -122,8 +164,8 @@ class MediaPipePoseRecog:
                     "top_left": (0.0, deadzone_top),
                     "bottom_right": (1.0, deadzone_bottom),
                     "color": COLOR_BAND,
-                    "alpha": 0.50,       # 50% opacity target request
-                    "thickness": -1,     # FIX: Explicitly enforce solid fill setting
+                    "alpha": 0.50,  # 50% opacity target request
+                    "thickness": -1,  # FIX: Explicitly enforce solid fill setting
                 }
             )
 

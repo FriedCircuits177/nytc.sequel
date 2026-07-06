@@ -51,7 +51,7 @@ class SharedState:
         self.drive_x = 0.0
         self.drive_y = 0.0
         self.drive_r = 0.0
-        self.drive_r2 = 0.0
+        self.drive_l2 = 0.0
         # Button triggers for discrete actions (like opening a mechanism or emergency stopping)
         self.controller_buttons = {
             "cross": False,

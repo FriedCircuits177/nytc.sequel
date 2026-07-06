@@ -615,26 +615,6 @@ class PhaseTimeline(BaseWindow):
 
 class RobotCameraCycleWindow(BaseWindow):
     def __init__(self, gui, camera_configs: list[dict]):
-        """
-        Args:
-            gui: Main GUI instance reference.
-            camera_configs: List of configuration dictionaries. Format:
-                [
-                    {
-                        "caption": "SBBot Camera",
-                        "frame_attr_name": "sb_gui_camera_frame",
-                        "frame_lock": self.shared_state.sb_gui_camera_frame_lock,
-                        "active_attr_name": "robot_camera_active"  # <--- Added flag string
-                    },
-                    {
-                        "caption": "Webcam Feed",
-                        "frame_attr_name": "webcam_camera_frame",
-                        "frame_lock": self.shared_state.webcam_camera_frame_lock,
-                        "active_attr_name": "webcam_active"        # <--- Added flag string
-                    }
-                ]
-        """
-        # Initialize with the first camera's caption as a default title
         initial_title = (
             camera_configs[0]["caption"] if camera_configs else "Camera Cycle"
         )
@@ -643,7 +623,6 @@ class RobotCameraCycleWindow(BaseWindow):
         self.camera_configs = camera_configs
         self.current_index = 0
 
-        # Use an instance ID unique tag to prevent DPG naming collisions
         instance_id = id(self)
         self.window_tag = f"cycle_window_{instance_id}"
         self.texture_tag = f"cycle_texture_{instance_id}"
@@ -652,6 +631,9 @@ class RobotCameraCycleWindow(BaseWindow):
 
         self.width = 640
         self.height = 480
+
+        # ADD THIS LINE HERE:
+        self.last_triangle_state = False
 
     def build(self):
         if not self.camera_configs:
@@ -738,6 +720,26 @@ class RobotCameraCycleWindow(BaseWindow):
     def update(self):
         if not self.camera_configs:
             return
+
+        # --- CONTROLLER TRIANGLE EDGE DETECTOR ---
+        with self.gui.shared_state.drive_command_lock:
+            current_triangle = self.gui.shared_state.controller_buttons.get(
+                "triangle", False
+            )
+
+        # Detect button release: was pressed last frame, but released this frame
+        if self.last_triangle_state and not current_triangle:
+            self.current_index = (self.current_index + 1) % len(self.camera_configs)
+            new_config = self.camera_configs[self.current_index]
+            dpg.configure_item(self.window_tag, label=new_config["caption"])
+            self._sync_camera_thread_states()
+            logger.info(
+                f"Controller Event: TRIANGLE -> Cycled camera window to: {new_config['caption']}"
+            )
+
+        # Save the current state to compare against on the next frame
+        self.last_triangle_state = current_triangle
+        # ----------------------------------------
 
         current_config = self.camera_configs[self.current_index]
 
