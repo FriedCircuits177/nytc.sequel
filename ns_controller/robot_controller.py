@@ -83,7 +83,7 @@ class RobotController:
             self.sbbot.connect()
             self.sbbot._sdk.balance_start_balancing()
             # self.sbbot._sdk.balance_set_acceleration(0.5)
-            self.sbbot._sdk.load_models(["apriltag_qrcode"])
+            self.sbbot._sdk.load_models(["apriltag_qrcode", "line_recognition"])
         except Exception as e:
             logger.error(f"SBBot initialization failed: {e}. Running offline.")
 
@@ -167,7 +167,7 @@ class RobotController:
     def phase1(self):
         """sbb moves to april tag"""
         self.sbbot.SBB_AP_centralization_approaching(
-            distance=0.4, gap=20, fwd_spd=20, turn_spd=10
+            distance=0.4, gap=20, fwd_spd=20, turn_spd=5
         )
         self.sbbot.SBB_charge_and_stop()
         self.advance_phase()
@@ -215,11 +215,12 @@ class RobotController:
         # Assuming standard ~60 degree horizontal camera FOV: 60 deg / 640 px = ~0.09375
         PX_TO_DEGREES = 0.09375
 
-        delivery_schedule = [
-            {"color": ns_shared.BlockColour.BLUE, "qty": 2},
-            {"color": ns_shared.BlockColour.RED, "qty": 2},
-            {"color": ns_shared.BlockColour.RED, "qty": 1},
-        ]
+        # delivery_schedule = [
+        #     {"color": ns_shared.BlockColour.BLUE, "qty": 2},
+        #     {"color": ns_shared.BlockColour.RED, "qty": 2},
+        #     {"color": ns_shared.BlockColour.RED, "qty": 1},
+        # ]
+        delivery_schedule = [{"color": ns_shared.BlockColour.RED, "qty": 2}]
 
         for trip in delivery_schedule:
             target_color = trip["color"]
@@ -241,6 +242,10 @@ class RobotController:
                 and not self.queue_channels.kill_flag.is_set()
             ):
                 # 1. Thread-safe retrieval of detection payload
+                with self.shared_state.phase_state.lock:
+                    if not self.shared_state.phase_state.is_running:
+                        self.engbot._sdk.mecanum_stop()
+                        break
                 with self.shared_state.block_detection_data_lock:
                     detection_payload = self.shared_state.block_detection_data
 
@@ -304,7 +309,7 @@ class RobotController:
 
                         # Store the absolute field position of the NEXT NEAREST block
                         current_imu = self.engbot.get_imu_heading()
-                        backup_block_heading = current_imu + relative_angle
+                        # backup_block_heading = current_imu + relative_angle
 
                     # Check if path is blocked by an incorrect color block closer than the target
                     path_is_blocked = False
@@ -320,14 +325,14 @@ class RobotController:
                                 obstacle_x = block["pixel_center"][0]
                                 break
 
-                    if path_is_blocked and obstacle_x is not None:
-                        logging.warning("Path blocked! Strafing around obstacle...")
-                        strafe_direction = -1.0 if obstacle_x > 320 else 1.0
-                        self.engbot.mecanum_translate(
-                            strafe_direction, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED
-                        )
-                        time.sleep(0.3)  # Execute sidestep pulse
-                        continue
+                    # if path_is_blocked and obstacle_x is not None:
+                    #     logging.warning("Path blocked! Strafing around obstacle...")
+                    #     strafe_direction = -1.0 if obstacle_x > 320 else 1.0
+                    #     self.engbot.mecanum_translate(
+                    #         strafe_direction, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED
+                    #     )
+                    #     time.sleep(0.3)  # Execute sidestep pulse
+                    #     continue
 
                     # Check if block has reached collection threshold (Bottom 50px)
                     if cy >= CAPTURE_THRESHOLD_Y:

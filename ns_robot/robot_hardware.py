@@ -1,8 +1,10 @@
 import json
 import logging
+import math
 import os
+import shutil
 import time
-from math import asin, dist
+from math import atan
 from turtle import width
 
 import cv2
@@ -162,7 +164,7 @@ class RobotHardware:
         logging.info("Maneuver complete.")
 
     def pivot_around_plough(
-        self, omega_turn, MAX_SPEED=80, MAX_ROTATION_SPEED=280, D=0.25
+        self, omega_turn, MAX_SPEED=80, MAX_ROTATION_SPEED=280, D=15
     ):
         """
         Rotates the robot while counter-strafing so the pivot point
@@ -236,7 +238,7 @@ class RobotHardware:
         return (front_left, front_right, back_left, back_right)
 
     def SBB_AP_centralization_approaching(
-        self, distance=0.5, gap=20, fwd_spd=5, turn_spd=20, target_id=5
+        self, distance=0.5, gap=50, fwd_spd=5, turn_spd=20, target_id=5
     ):
         """
         Drive toward the closest detected AprilTag in a path sequence, keeping it centered.
@@ -381,31 +383,16 @@ class RobotHardware:
 
     def SBB_charge_and_stop(self):
         # charge
+        self._sdk.balance_set_acceleration(10)
         self._sdk.balance_move_speed_times(0, 80, 100, 1)
         # stop
-
+        # self.SBB_AP_centralization_approaching(
+        #     distance=0.5, gap=20, fwd_spd=5, turn_spd=20, target_id=5
+        # )
         # while not self.queue_channels.kill_flag.is_set():
-        #     self._sdk.screen_display_background(7)
-        #     line_type = self._sdk.get_single_track_total_info()
-        #     logging.info(f"Line type: {line_type}")
-        #     self._sdk.balance_move_speed(0, 40)
-
-        #     if line_type == 1:
-        #         while not self.queue_channels.kill_flag.is_set():
-        #             self._sdk.screen_display_background(0)
-        #             line_type = self._sdk.get_single_track_total_info()
-        #             logging.info(f"Line type: {line_type}")
-        #             self._sdk.balance_move_speed(0, 80)
-
-        #             if line_type == 0:
-        #                 self._sdk.balance_move_speed(0, 0)
-        #                 break
-
-        #         self._sdk.balance_move_speed(0, 0)
-        #         break
 
         self._sdk.screen_display_background(6)
-        self._sdk.balance_move_speed(0, 0)
+        self._sdk.balance_stop_balancing()
 
     def register_villian(self):
         logging.info("Registering villian...")
@@ -417,8 +404,8 @@ class RobotHardware:
         max_speed=20,
         strafe_speed=10,
         threshold=50,
-        arm_down_distance=40,
-        pick_distance=15,
+        arm_down_distance=60,
+        pick_distance=50,
     ):
         arm_down = False
         picked = False
@@ -692,10 +679,24 @@ class RobotHardware:
 
         mean_center_x = sum(center_x_data) / len(center_x_data)
         mean_width = sum(width_data) / len(width_data)
-        # now let's do some trig
+
+        # 1. Calculate actual distance (Keep this if you need it for arm trajectory)
         distance = (width_of_face * ns_shared.CAMERA_FOCAL_LENGTH) / mean_width
-        angle_to_turn = int(asin(mean_width / distance))
-        logging.info(f"turning {angle_to_turn} degrees to face the face!")
+        logging.info(f"Target is approximately {distance:.1f} cm away.")
+
+        # 2. Calculate horizontal angular offset from center lens
+        IMAGE_CENTER_X = 320  # Assuming 640 width frame
+        pixel_error = mean_center_x - IMAGE_CENTER_X
+
+        # atan returns radians; convert to degrees
+        angle_to_turn_rad = math.atan(pixel_error / ns_shared.CAMERA_FOCAL_LENGTH)
+        angle_to_turn = int(math.degrees(angle_to_turn_rad))
+
+        logging.info(
+            f"Target pixel offset: {pixel_error}px -> Turning {angle_to_turn} degrees to center up!"
+        )
+
+        # 3. Fire your SDK joint controls
         self._sdk.mechanical_single_joint_control(1, angle_to_turn, 500)
         time.sleep(1)
         self._sdk.mechanical_single_joint_control(2, 45, 400)
@@ -704,59 +705,66 @@ class RobotHardware:
         time.sleep(0.2)
         self._sdk.mechanical_clamp_release()
 
-    def register_face_from_file(self, name, local_file_path):
+    def register_face_from_file(self, name, target_jpeg_path):
         """
-        Registers a face using a pre-existing local JPEG file instead of
-        triggering the live camera countdown.
-
-        Args:
-            name (str): Face name to register.
-            local_file_path (str): Absolute or relative path to the local .jpg file.
+        Registers a face using a custom local JPEG file by copying it to the
+        expected SDK execution directory before uploading.
         """
-        # 1. Early exit if the file doesn't exist locally
-        if not os.path.exists(local_file_path):
-            logging.error(f"Local file not found: {local_file_path}")
+        if not os.path.exists(target_jpeg_path):
+            logging.error(f"Target file not found: {target_jpeg_path}")
             return False
 
-        # 2. Check if the name is already registered in the robot's DB
         names = self._sdk.VISION.face_recognition_get_all_names()
         if names and name in names:
-            logging.info(f"Face [{name}] already exists in the system.")
+            logging.info(f"Face [{name}] already exists.")
             return True
 
-        # Ensure models are loaded on the hardware side
         self._sdk.load_models(["face_recognition"])
 
-        # 3. Mirror the SDK's exact naming convention for the backend
+        # 1. Determine the SDK's expected execution directory
+        sdk_dir = os.path.dirname(os.path.realpath(__file__))
         image_name = "{}.jpg".format(name)
+        expected_local_path = os.path.join(sdk_dir, image_name)
 
-        logging.info(f"Uploading {local_file_path} to robot as '{image_name}'...")
+        # 2. Safely copy your image into this directory with the exact expected name
+        try:
+            if os.path.abspath(target_jpeg_path) != os.path.abspath(
+                expected_local_path
+            ):
+                shutil.copy2(target_jpeg_path, expected_local_path)
+                logging.info(f"Staged image to script directory: {expected_local_path}")
+        except Exception as e:
+            logging.error(f"Failed staging image file locally: {e}")
+            return False
 
-        # 4. Upload the local file directly using the SDK's internal network utility
+        logging.info(f"Uploading staged image via HTTP...")
+
+        # 3. Upload using the cleanly formatted local path
         upload_response = upload_vision_picture(
-            self._sdk.http_basic_url, local_file_path
+            self._sdk.http_basic_url, expected_local_path
         )
+
+        # Clean up the staged file on your laptop immediately so it doesn't clutter your code workspace
+        if os.path.exists(expected_local_path):
+            os.remove(expected_local_path)
+
         if not upload_response or upload_response.get("code") != 0:
             logging.error("Failed to upload the image to the robot server.")
             return False
 
-        # 5. Commit the uploaded filename and mapping to the onboard model
+        # 4. Trigger the GRPC DB Insertion
+        logging.info(f"Committing {image_name} to onboard face database...")
         response = self._sdk.VISION.face_recognition_insert_data(image_name, name)
+
         if response is not None:
             if response.code == 0:
-                logging.info(
-                    f"Face [{name}] registered successfully on the hardware model."
-                )
+                logging.info(f"Face [{name}] registered successfully!")
                 return True
             else:
-                # The onboard model runs inference on the uploaded image here;
-                # if it can't find a clear bounding box for a face, it fails.
-                logging.error(
-                    f"Robot backend failed to detect a face in the image. Message: {response.msg}"
-                )
+                logging.error(f"Robot backend error. Message: {response.msg}")
                 return False
 
-        logging.error("No response received from the face recognition database.")
+        logging.error("No response from GRPC face service.")
         return False
 
     def get_imu_heading(self):
