@@ -1,6 +1,7 @@
 import logging
 import threading
 from enum import Enum
+from queue import Queue
 
 logger = logging.Logger(__name__)
 
@@ -26,9 +27,14 @@ class Phase(Enum):
 
 class MicroState(Enum):
     """this was gonna be used to flag the microstates of the shovelling red blue blocks
-    task, not sure if I'll use it, but it's here"""
-
-    pass
+    task, not sure if I'll use it, but it's here
+    07/07/2026 2349h oh i finally used it :)"""
+    P4_SCAN = "Scan"
+    P4_ALIGN = "Align"
+    P4_DASH = "Dash"
+    P4_TURN_AROUND = "Turn Around"
+    P4_TURN_AROUND_PLOUGH = "Turn Around Plough"
+    P4_DELIVER = "Deliver"
 
 
 class RobotModel(Enum):
@@ -65,3 +71,29 @@ class PeripheralStatus(Enum):
 class PeripheralConnectionCommand(Enum):
     CONNECT = "Connect"
     DISCONNECT = "DISCONNECT"
+
+class DeliveryItem:
+    def __init__(self,colour:BlockColour,count:int):
+        self.colour = colour
+        self.count = count
+
+class DeliverySchedule(Queue):
+    def __init__(self):
+        self.current = None
+    def add(self,colour:BlockColour,count:int):
+        self.put(DeliveryItem(colour,count))
+    def get_current(self):
+        if not self.current:
+            self.current = self.get()
+        return self.current
+    def get_current_colour(self):
+        if not self.current:
+            self.current = self.get()
+        return self.current.colour
+    def get_current_quantity(self):
+        if not self.current:
+            self.current = self.get()
+        return self.current.count
+    def delivery_successful_please_next_item(self):
+        """next item, please!"""
+        self.current = self.get()

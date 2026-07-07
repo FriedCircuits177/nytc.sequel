@@ -82,9 +82,20 @@ class WebcamProcessor:
         self.alpha = np.ones((self.height, self.width), dtype=np.float32)
         self.output = np.empty((self.height, self.width, 4), dtype=np.float32)
 
+        self.fps_frames = 0
+        self.fps_last_time = time.time()
+        self.fps_count = 0
+        self.fps_sum = 0.0
+        self.max_fps = 0
+        self.fps_text = "FPS: 0 AVG: 0 MAX: 0"
+        self.last_active_state = False
+
     def process(self, frame):
         if frame is None:
             return None
+
+        frame = cv2.flip(frame, 1)
+
 
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
@@ -139,6 +150,26 @@ class WebcamProcessor:
 
                 cv2.circle(frame, center, radius, color, thickness)
         # ------------------------------------
+
+        # Original logic: Normalise and push to DearPyGUI texture format
+        # --- FPS CALCULATOR LAYER ---
+        self.fps_frames += 1
+        now = time.time()
+        if now - self.fps_last_time >= 1.0:
+            current_fps = self.fps_frames
+            self.fps_frames = 0
+            self.fps_count += 1
+            self.fps_sum += current_fps
+            mean_fps = self.fps_sum / self.fps_count
+            if current_fps > self.max_fps:
+                self.max_fps = current_fps
+
+            self.fps_text = f"FPS: {current_fps} AVG: {int(mean_fps)} MAX: {self.max_fps}"
+            self.fps_last_time = now
+
+        # Burn FPS text with a dark high-contrast shadow offset by 1 pixel
+        #cv2.putText(frame, self.fps_text, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, self.fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
 
         # Original logic: Normalise and push to DearPyGUI texture format
         np.divide(frame, 255.0, out=self.output[:, :, :3], casting="unsafe")

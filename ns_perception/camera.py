@@ -123,6 +123,15 @@ class CameraGUIProcessor:
         self.height = 480
         self.output = np.empty((self.height, self.width, 4), dtype=np.float32)
 
+        # --- LIGHTWEIGHT FPS TRACKING CONFIG ---
+        self.fps_frames = 0
+        self.fps_last_time = time.time()
+        self.fps_count = 0
+        self.fps_sum = 0.0
+        self.max_fps = 0
+        self.fps_text = "FPS: 0 AVG: 0 MAX: 0"
+        self.last_active_state = False
+
     def process(self, frame: np.ndarray) -> np.ndarray | None:
         if frame is None:
             return None
@@ -211,6 +220,36 @@ class CameraGUIProcessor:
                     thickness,
                     cv2.LINE_AA,
                 )
+
+        # Convert robot BGR to RGB
+        current_active = self.active_flag.is_set()
+        if current_active and not self.last_active_state:
+            self.fps_frames = 0
+            self.fps_last_time = time.time()
+            self.fps_count = 0
+            self.fps_sum = 0.0
+            self.max_fps = 0
+            self.fps_text = "FPS: 0 AVG: 0 MAX: 0"
+        self.last_active_state = current_active
+
+        # --- FPS CALCULATOR LAYER ---
+        self.fps_frames += 1
+        now = time.time()
+        if now - self.fps_last_time >= 1.0:
+            current_fps = self.fps_frames
+            self.fps_frames = 0
+            self.fps_count += 1
+            self.fps_sum += current_fps
+            mean_fps = self.fps_sum / self.fps_count
+            if current_fps > self.max_fps:
+                self.max_fps = current_fps
+
+            self.fps_text = f"FPS: {current_fps} AVG: {int(mean_fps)} MAX: {self.max_fps}"
+            self.fps_last_time = now
+
+        # Burn FPS text with a dark high-contrast shadow offset by 1 pixel
+        #cv2.putText(frame, self.fps_text, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(frame, self.fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
 
         # Convert robot BGR to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

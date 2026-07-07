@@ -67,9 +67,182 @@ class RobotHardware:
                 ns_shared.PeripheralStatus.CONNECTED
             )
 
-    def mecanum_translate(self, vx, vy, omega, max_speed=80, max_rotation_speed=280):
+    def new_block_sorting(self,MAX_SPEED=40,MAX_STRAFE_SPEED=40,MAX_ROTATION_SPEED = 20,alignment_tolerance=40):
+        logging.info("STARTING BLOCK SORTING. HERE GOES NOTHING.")
+        NORTH_HEADING = self.get_imu_heading() #this refers to the end with the delivery zones
+        SOUTH_HEADING = 180.0-NORTH_HEADING #this refers to the end with the start zone
+        current_heading = NORTH_HEADING
+        plough = []
+        vision_data = {}
+        block_line = []
+        state = ns_shared.MicroState.P4_SCAN
+        delivery_schedule = ns_shared.DeliverySchedule()
+        delivery_schedule.add(ns_shared.BlockColour.RED,1)
+        delivery_schedule.add(ns_shared.BlockColour.RED,2)
+        delivery_schedule.add(ns_shared.BlockColour.BLUE,2)
+
+        while not self.queue_channels.kill_flag.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
+                self._sdk.mecanum_stop()
+                logging.info("Block sorting halted: Killed by user")
+                return
+            #first, poll data if needed
+            if state in (ns_shared.MicroState.P4_SCAN,ns_shared.MicroState.P4_ALIGN,ns_shared.MicroState.P4_DELIVER):
+                with self.shared_state.block_detection_data_lock:
+                    vision_data = self.shared_state.block_detection_data.copy()
+                if not vision_data:
+                    logging.warning(f"Block sorting: No vision data was detected. Currently on {state}")
+                    time.sleep(0.01)
+                    continue
+                if len(vision_data["blocks"]) > 5:
+                    logging.warning(f"Block sorting: Detected blocks > 5. Detected {len(vision_data["blocks"])}. Skipping this frame")
+                    time.sleep(0.01)
+                    continue
+                block_line = vision_data["blocks"].sorted(key=lambda item: item["pixel_center"][0]) #sorts blocks from left to right
+
+            match state:
+                case ns_shared.MicroState.P4_SCAN:
+                    # FIX: Use sorted() to prevent block_line from becoming None
+                    block_line = sorted(vision_data["blocks"], key=lambda item: item["pixel_center"][0])
+
+                    if not block_line:
+                        continue
+
+                    target_color = delivery_schedule.get_current_colour()
+                    best_candidate = None
+                    highest_priority = -1  # Lower values mean lower priority
+
+                    for index, block in enumerate(block_line):
+                        # Filter for current schedule color requirements
+                        if block["color"] != target_color:
+                            continue
+
+                        # Determine structural priority
+                        # Priority 2: Absolute edges (Index 0 or Last index) - SAFEST
+                        if index == 0 or index == len(block_line) - 1:
+                            current_priority = 2
+                        # Priority 1: One layer inward (Index 1 or Second to last) - NEXT BEST
+                        elif index == 1 or index == len(block_line) - 2:
+                            current_priority = 1
+                        # Priority 0: Deep interior blocks (high risk of double flanking collisions)
+                        else:
+                            current_priority = 0
+
+                        # Selection/Tie-breaker logic
+                        if current_priority > highest_priority:
+                            highest_priority = current_priority
+                            best_candidate = block
+                        elif current_priority == highest_priority:
+                            # If two blocks share edge priority, choose the one closer
+                            # to the center of the camera frame (320px) to minimize strafing distance
+                            if best_candidate:
+                                current_dist = abs(block["pixel_center"][0] - 320)
+                                best_dist = abs(best_candidate["pixel_center"][0] - 320)
+                                if current_dist < best_dist:
+                                    best_candidate = block
+
+                    # If a suitable block matching the schedule was found, lock on and move to align
+                    if best_candidate is not None:
+                        # Store the chosen target in self so P4_ALIGN can track it across frames
+                        self.tracked_target_block = best_candidate
+                        logging.info(f"Target selected! Color: {target_color}, CX: {best_candidate['pixel_center'][0]}, Priority Tier: {highest_priority}")
+                        state = ns_shared.MicroState.P4_ALIGN
+                    else:
+                        logging.warning(f"No blocks matching color {target_color} found in the line.")
+
+
+                case ns_shared.MicroState.P4_ALIGN:
+                    # 1. Sort the fresh frame from left to right
+                    block_line = sorted(vision_data["blocks"], key=lambda item: item["pixel_center"][0])
+
+                    if not block_line:
+                        # If we lose visibility entirely, stop moving and wait for a frame recovery
+                        self._sdk.mecanum_stop()
+                        logging.warning("P4_ALIGN: Blinded! No blocks visible. Holding position.")
+                        continue
+
+                    # 2. Re-locate our tracked target block in the new frame
+                    # Look for the block of the same color closest to our last target's CX coordinate
+                    target_color = delivery_schedule.get_current_colour()
+                    last_known_cx = self.tracked_target_block["pixel_center"][0]
+
+                    current_target = None
+                    best_match_distance = float('inf')
+
+                    for block in block_line:
+                        if block["color"] != target_color:
+                            continue
+
+                        dist = abs(block["pixel_center"][0] - last_known_cx)
+                        if dist < best_match_distance:
+                            best_match_distance = dist
+                            current_target = block
+
+                    # Fallback if our specific target block disappeared completely
+                    if current_target is None:
+                        logging.warning("P4_ALIGN: Target lost from frame! Dropping back to SCAN.")
+                        self._sdk.mecanum_stop()
+                        state = ns_shared.MicroState.P4_SCAN
+                        continue
+
+                    # Update our tracker with the latest confirmed coordinates
+                    self.tracked_target_block = current_target
+                    cx = current_target["pixel_center"][0]
+
+                    # 3. Calculate alignment errors
+                    FRAME_CENTER_X = 320
+                    pixel_error = cx - FRAME_CENTER_X
+
+                    # Compute heading correction relative to your North target
+                    # (Assuming get_imu_heading() returns degrees)
+                    rotation_error_deg = NORTH_HEADING - self.get_imu_heading()
+
+                    # 4. Check if we are aligned within tolerance
+                    # Convert alignment_tolerance from pixels if needed, or check absolute pixel error
+                    if abs(pixel_error) <= alignment_tolerance:
+                        # Success! Stop sideways movement and prepare to dive down the tunnel
+                        self._sdk.mecanum_stop()
+                        logging.info(f"P4_ALIGN: Alignment achieved! Error: {pixel_error}px. Advancing to DASH.")
+                        state = ns_shared.MicroState.P4_DASH
+                    else:
+                        # 5. Execute stationary strafe alignment
+                        # Normalize pixel error to a clean -1.0 to 1.0 range
+                        # -320px error = -1.0 (Full Left Strafe) | +320px error = 1.0 (Full Right Strafe)
+                        normalized_strafe = pixel_error / 320.0
+
+                        # Apply Proportional scaling logic for the commands before handing over
+                        KP_STRAFE = 1.5  # Controls how aggressively it ramps up to -1.0/1.0
+                        KP_ROTATION = 2.0  # Translates degrees error to a target velocity (deg/s)
+
+                        # Calculate commands, clamping the normalized strafe between -1.0 and 1.0
+                        strafe_cmd = max(-1.0, min(1.0, normalized_strafe * KP_STRAFE))
+                        rotation_cmd_degs = rotation_error_deg * KP_ROTATION
+
+                        # Keep Y=0! Do not nose-dive forward until horizontal alignment is complete.
+                        # x: -1.0 to 1.0 | y: -1.0 to 1.0 | r: deg/s
+                        self.mecanum_translate(strafe_cmd, 0.0, rotation_cmd_degs,MAX_SPEED,MAX_ROTATION_SPEED,MAX_STRAFE_SPEED)
+                case ns_shared.MicroState.P4_DASH:
+                    #dash and collect in plough, maintaining heading to whatever is the current direction
+                    # check constantly to see if the block entered the plough, this part can be done later. for now assume it is a succesful catch
+                    # Now, make a decision based on delivery schedule etc. Turn around plough and collect another, or deliver? Change state accordingly.
+                    pass
+                case ns_shared.MicroState.P4_DELIVER:
+                    #deliver, worry about this later
+                    pass
+                case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH:
+                    #use imu and self.pivot_around_plough(), and turn around to snap directly to the opposite direction. After this back to scan.
+                    pass
+                case ns_shared.MicroState.P4_TURN_AROUND:
+                    #this is for post-delivery, where we can turn around as compact as possible without worrying about plough contents. After this back to scan.
+                    pass
+
+            time.sleep(0.02)
+
+        return
+
+    def mecanum_translate(self, vx, vy, omega, max_speed=80, max_rotation_speed=280, max_strafe_speed = 80):
         self._sdk.mecanum_move_xyz(
-            int(vx * max_speed), int(vy * max_speed), int(omega * max_rotation_speed)
+            int(vx * max_strafe_speed), int(vy * max_speed), int(omega * max_rotation_speed)
         )
 
     def navigate_to_delivery_zone(

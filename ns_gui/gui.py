@@ -33,6 +33,7 @@ class WebcamWindow(BaseWindow):
         self.width = 640
         self.height = 480
 
+
     def build(self):
         with dpg.texture_registry():  # type: ignore
             dpg.add_dynamic_texture(

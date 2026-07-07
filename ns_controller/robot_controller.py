@@ -30,8 +30,8 @@ class RobotController:
         self.engbot = engbot
         self.sbbot = sbbot
 
-        self.async_setup_engbot()
-        self.async_setup_sbbot()
+        # self.async_setup_engbot()
+        # self.async_setup_sbbot()
 
     # def _check(self):
     #     """Checks if the frontend requested a stop.
@@ -454,46 +454,51 @@ class RobotController:
         logging.info("you can kiss it you can break all the rules")
 
     def opcontrol_pose(self):
-        logging.info("opcontrol pose started")
-        self.queue_channels.pose_recog_active_flag.set()
-        self.max_speed = 40  # cm/s
-        self.max_rotation_speed = 120
+            logging.info("opcontrol pose started")
+            self.queue_channels.pose_recog_active_flag.set()
+            self.max_speed = 40  # Regular maximum speed cap
+            self.max_rotation_speed = 120
 
-        while not self.queue_channels.kill_flag.is_set():
-            # FIX 2: Gracefully exit and preserve phase position if stopped
-            if not self.shared_state.phase_state.is_running.is_set():
-                self.engbot._sdk.mecanum_stop()
-                self.queue_channels.pose_recog_active_flag.clear()
-                return False
+            while not self.queue_channels.kill_flag.is_set():
+                if not self.shared_state.phase_state.is_running.is_set():
+                    self.engbot._sdk.mecanum_stop()
+                    self.queue_channels.pose_recog_active_flag.clear()
+                    self.queue_channels.turbo_drive_flag.clear()
+                    return True
 
-            try:
-                x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
-            except queue.Empty:
-                self.engbot._sdk.mecanum_stop()
-                continue
+                try:
+                    x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
+                except queue.Empty:
+                    self.engbot._sdk.mecanum_stop()
+                    continue
 
-            print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
+                print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
 
-            x_movement = int(
-                self.engbot.map_and_clamp(x_val, -1, 1, -self.max_speed, self.max_speed)
-            )
-            y_movement = int(
-                self.engbot.map_and_clamp(y_val, -1, 1, -self.max_speed, self.max_speed)
-            )
-            r_movement = int(
-                self.engbot.map_and_clamp(
-                    r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                # --- DYNAMIC SPEED UNLOCK ---
+                # If turbo_drive_flag is active, push up to the robot's max capability (80 cm/s)
+                current_max_speed = 80 if self.queue_channels.turbo_drive_flag.is_set() else self.max_speed
+
+                x_movement = int(
+                    self.engbot.map_and_clamp(x_val, -1, 1, -current_max_speed, current_max_speed)
                 )
-            )
+                y_movement = int(
+                    self.engbot.map_and_clamp(y_val, -1, 1, -current_max_speed, current_max_speed)
+                )
+                r_movement = int(
+                    self.engbot.map_and_clamp(
+                        r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                    )
+                )
 
-            if x_movement == 0 and y_movement == 0 and r_movement == 0:
-                self.engbot._sdk.mecanum_stop()
-            else:
-                self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+                if x_movement == 0 and y_movement == 0 and r_movement == 0:
+                    self.engbot._sdk.mecanum_stop()
+                else:
+                    self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
 
-        self.engbot._sdk.mecanum_stop()
-        self.queue_channels.pose_recog_active_flag.clear()
-        return True
+            self.engbot._sdk.mecanum_stop()
+            self.queue_channels.pose_recog_active_flag.clear()
+            self.queue_channels.turbo_drive_flag.clear()
+            return True
 
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""

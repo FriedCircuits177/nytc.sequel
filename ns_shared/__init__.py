@@ -10,5 +10,7 @@ from .terms import (
     Phase,
     PhaseType,
     RobotModel,
+    DeliveryItem,
+    DeliverySchedule
 )
 from .thread_constructor import construct_thread

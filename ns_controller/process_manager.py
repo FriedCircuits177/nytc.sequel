@@ -102,17 +102,17 @@ class ProcessManager:
             logging.error("Debug mode is deprecated!")
         else:
             self.threads = [
-                ns_shared.construct_thread(self.robot_controller.mainloop),
-                ns_shared.construct_thread(self.sbbot_camera.mainloop),
-                ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
-                ns_shared.construct_thread(self.engbot_camera.mainloop),
-                ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
+                ns_shared.construct_thread(self.robot_controller.mainloop, daemon=False),
+                # ns_shared.construct_thread(self.sbbot_camera.mainloop),
+                # ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
+                # ns_shared.construct_thread(self.engbot_camera.mainloop),
+                # ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
                 ns_shared.construct_thread(self.webcam.mainloop),
                 ns_shared.construct_thread(self.webcam_processor.mainloop),
-                ns_shared.construct_thread(self.block_detection.mainloop),
-                ns_shared.construct_thread(self.ps4_driver.mainloop),
-                ns_shared.construct_thread(self.pose_recog.mainloop),
-                ns_shared.construct_thread(self.ball_detection.mainloop),
+                ns_shared.construct_thread(self.block_detection.mainloop, daemon=True),
+                ns_shared.construct_thread(self.ps4_driver.mainloop, daemon=True),
+                ns_shared.construct_thread(self.pose_recog.mainloop, daemon=True),
+                ns_shared.construct_thread(self.ball_detection.mainloop, daemon=True),
             ]
 
         for _ in self.threads:
@@ -127,10 +127,15 @@ class ProcessManager:
         logger.info("Starting cleanup")
         # now do cleanup
         for _ in self.threads:
-            _.join()
-            logger.info(
-                f"Thread {_.name} joined ({self.threads.index(_) + 1}/{len(self.threads)})"
-            )
+            if not _.daemon:
+                _.join()
+                logger.info(
+                    f"Thread {_.name} joined ({self.threads.index(_) + 1}/{len(self.threads)})"
+                )
+            else:
+                logger.info(
+                    f"Daemon thread {_.name} terminated ({self.threads.index(_) + 1}/{len(self.threads)})"
+                )
         # and now he dies peacefully with all his children
-        logger.info("All threads joined!")
+        logger.info("All threads joined/terminated!")
         logger.info("ProcessManager succesfully shutdown")
