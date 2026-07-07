@@ -14,7 +14,7 @@ ENGBOT_NAME = "UGOT_1B20"
 SBBOT_IP = "192.168.137.238"
 ENGBOT_IP = "192.168.137.214"
 TURBOJPEG_PATH = "C:/libjpeg-turbo-gcc64/bin/libturbojpeg.dll"
-VILLAIN_JPEG_PATH = "villain.jpeg"
+VILLAIN_JPEG_PATH = "villain2.jpeg"
 MEDIAPIPE_MODEL_PATH = "pose_landmarker_full.task"
 
 CAMERA_FOCAL_LENGTH = 480  # tune ts please please please

@@ -31,7 +31,7 @@ class RobotController:
         self.sbbot = sbbot
 
         self.async_setup_engbot()
-        # self.async_setup_sbbot()
+        self.async_setup_sbbot()
 
     # def _check(self):
     #     """Checks if the frontend requested a stop.
@@ -68,7 +68,7 @@ class RobotController:
                     "apriltag_qrcode",
                 ]
             )
-            self.engbot.register_face_from_file("villain", ns_shared.VILLAIN_JPEG_PATH)
+            self.engbot.register_face_from_file("villain2", ns_shared.VILLAIN_JPEG_PATH)
             self.engbot._sdk.mechanical_joint_control(0, 90, 0, 1000)
         except Exception as e:
             logger.error(f"ENGBot initialization failed: {e}. Running offline.")
@@ -191,7 +191,7 @@ class RobotController:
         # self.engbot._sdk.mecanum_stop()
         # return
         self.queue_channels.ball_detection_active_flag.set()
-        self.engbot.eng_ball_centralise_and_pick()
+        # self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
         self.engbot.eng_throw_ball()
 

@@ -190,10 +190,14 @@ class RobotHardware:
         if max_val > 1.0:
             v_x_ratio /= max_val
             omega_ratio /= max_val
-            logging.warning("Requested rotation speed capped to preserve physical plough pivot limits.")
+            logging.warning(
+                "Requested rotation speed capped to preserve physical plough pivot limits."
+            )
 
         # 4. Ship the balanced ratios directly to your translation engine
-        logging.info(f"Plough Pivot -> Target: {deg_s}°/s | vx_ratio: {v_x_ratio:.3f}, omega_ratio: {omega_ratio:.3f}")
+        logging.info(
+            f"Plough Pivot -> Target: {deg_s}°/s | vx_ratio: {v_x_ratio:.3f}, omega_ratio: {omega_ratio:.3f}"
+        )
         logging.info(f"IMU: {self.get_imu_heading()}")
         self.mecanum_translate(
             v_x_ratio, v_y_ratio, omega_ratio, MAX_SPEED, MAX_ROTATION_SPEED
@@ -406,19 +410,23 @@ class RobotHardware:
         self._sdk.screen_display_background(6)
         self._sdk.balance_stop_balancing()
 
-    def register_villian(self):
-        logging.info("Registering villian...")
-        self._sdk.face_recognition_add_name("Bad Guy")
-        logging.info("Villian registered.")
+    # def register_villian(self):
+    #     logging.info("Registering villian...")
+    #     self._sdk.face_recognition_add_name("Bad Guy")
+    #     logging.info("Villian registered.")
 
     def eng_ball_centralise_and_pick(
         self,
-        max_speed=20,
-        strafe_speed=10,
-        threshold=50,
-        arm_down_distance=60,
-        pick_distance=50,
+        max_speed=10,
+        strafe_speed=7,
+        threshold=70,
+        arm_down_distance=20,
+        pick_distance=15,
     ):
+        self._sdk.mechanical_clamp_release()
+        self._sdk.mechanical_joint_control(0, 0, 0, 1000)
+        pick_distance_attempt = 0
+        stop_attempt = 0
         arm_down = False
         picked = False
         # pick_confirm = False
@@ -446,28 +454,53 @@ class RobotHardware:
 
             logging.info(f"I SAW THE BALL, I AM {x_error} off and {distance} away")
 
-            if distance < pick_distance and arm_down:
+            if distance < pick_distance:
+                if pick_distance_attempt < 2:
+                    pick_distance_attempt += 1
+                    time.sleep(0.05)
+                    continue
                 logger.info("PICKING")
-                # original_y = y
-                self._sdk.mechanical_clamp_close()
-                self._sdk.mechanical_joint_control(0, 110, 90, 2000)
-                self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
-                picked = True
-            elif distance < arm_down_distance and not arm_down:
-                logger.info("ARM COMING DOWN")
-                self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
+                self._sdk.screen_display_background(6)
                 self._sdk.mechanical_clamp_release()
-                self._sdk.mechanical_joint_control(0, -60, -45, 1000)
-                arm_down = True
-            elif x_error > (0 + threshold):
-                logger.info("GO RIGHT")
-                # thatmeans it's to the right
-                self._sdk.mecanum_move_xyz(strafe_speed, max_speed, 0)
+                # original_y = y
+                self._sdk.mecanum_stop()
+                logger.info(f"{distance}")
+                self._sdk.mecanum_move_speed_times(0, 20, int((distance * 0.4 - 4)), 1)
+                time.sleep(1)
+                self._sdk.mecanum_stop()
+                time.sleep(1)
+                self._sdk.mechanical_joint_control(0, -30, -65, 1000)
+                time.sleep(1)
+                self._sdk.mechanical_joint_control(0, -30, -70, 1000)
+                time.sleep(1)
+                self._sdk.mechanical_joint_control(0, -30, -60, 1000)
+                time.sleep(1)
+                self._sdk.mechanical_joint_control(0, -30, -65, 1000)
+                time.sleep(1)
+                self._sdk.mechanical_clamp_close()
+                time.sleep(3)
+                self._sdk.mechanical_joint_control(0, 90, 60, 1000)
+                time.sleep(1)
+                # self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
+                picked = True
+                self._sdk.screen_display_background(0)
+                break
+            # elif distance < arm_down_distance and not arm_down:
+            #     logger.info("ARM COMING DOWN")
+            #     self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
+            #     self._sdk.mechanical_clamp_release()
+            #     self._sdk.mechanical_joint_control(0, 0, -60, 1000)
+            #     arm_down = True
 
-            elif x_error < (0 - threshold):
-                logger.info("GO LEFT")
-                # that means it's to the left i guess
-                self._sdk.mecanum_move_xyz(-strafe_speed, max_speed, 0)
+            # elif x_error > (0 + threshold):
+            #     logger.info("GO RIGHT")
+            #     # thatmeans it's to the right
+            #     self._sdk.mecanum_move_xyz(strafe_speed, int(0.5 * max_speed), 0)
+
+            # elif x_error < (0 - threshold):
+            #     logger.info("GO LEFT")
+            #     # that means it's to the left i guess
+            #     self._sdk.mecanum_move_xyz(-strafe_speed, int(0.5 * max_speed), 0)
 
             else:
                 logger.info("GO STRAIGHT")
@@ -656,6 +689,7 @@ class RobotHardware:
                 continue
 
     def eng_throw_ball(self, villain_scans=10, width_of_face=5):
+        self._sdk.mechanical_joint_control(0, 90, 60, 1000)
         self._sdk.mecanum_stop()
         villain_data = []
         center_x_data = []
@@ -668,7 +702,7 @@ class RobotHardware:
             face_data = self._sdk.get_face_recognition_total_info()
 
             for _ in face_data:
-                if _[0] == "villain":
+                if _[0] == "villain2" or _[0] == "villain":
                     villain_data.append(_)
                     center_x_data.append(_[1])
                     width_data.append(_[4])
@@ -711,11 +745,9 @@ class RobotHardware:
         # 3. Fire your SDK joint controls
         self._sdk.mechanical_single_joint_control(1, angle_to_turn, 500)
         time.sleep(1)
-        self._sdk.mechanical_single_joint_control(2, 45, 400)
-        time.sleep(0.2)
-        self._sdk.mechanical_single_joint_control(3, 50, 500)
-        time.sleep(0.2)
+        self._sdk.mechanical_joint_control(angle_to_turn, 45, 50, 500)
         self._sdk.mechanical_clamp_release()
+        time.sleep(1)
 
     def register_face_from_file(self, name, target_jpeg_path):
         """
