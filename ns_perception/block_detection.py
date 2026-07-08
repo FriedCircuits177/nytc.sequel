@@ -72,15 +72,24 @@ class BlockDetector:
                     cx = int(moments["m10"] / moments["m00"])
                     cy = int(moments["m01"] / moments["m00"])
 
+                    # NEW TRACKING LINES FOR CLOSEST EDGE
+                    # y + h gives the bottom-most pixel row of the contour (closest to robot)
+                    bottom_edge_y = y + h
+
+                    # Optional: Convert this bounding width to a physical distance if you know the zone's real width
+                    # zone_real_width = 30.0  # (Example: replace with your actual zone width in cm if known)
+                    # distance_to_zone = (zone_real_width * self.calibrated_focal_length) / w
+
                     detected_zones.append(
                         {
                             "color": color_enum,
                             "pixel_center": (cx, cy),
                             "pixel_bounds": (x, y, w, h),
+                            "bottom_edge_y": bottom_edge_y,  # Crucial for aligning close to the line
                             "area": area,
                         }
                     )
-                    continue  # Skip block processing if it's clearly a zone
+                    continue
 
                 # --- BLOCK CLASSIFICATION (Small, square cubes) ---
                 if not (0.75 <= aspect_ratio <= 1.35):

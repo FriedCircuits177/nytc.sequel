@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import os
+import queue
 import shutil
 import time
 from math import atan
@@ -67,43 +68,80 @@ class RobotHardware:
                 ns_shared.PeripheralStatus.CONNECTED
             )
 
-    def new_block_sorting(self,MAX_SPEED=40,MAX_STRAFE_SPEED=40,MAX_ROTATION_SPEED = 20,alignment_tolerance=40):
+    def new_block_sorting(
+        self,
+        MAX_SPEED=40,
+        MAX_DIVE_SPEED=50,
+        MAX_STRAFE_SPEED=40,
+        MAX_ROTATION_SPEED=20,
+        alignment_tolerance=40,
+    ):
         logging.info("STARTING BLOCK SORTING. HERE GOES NOTHING.")
-        NORTH_HEADING = self.get_imu_heading() #this refers to the end with the delivery zones
-        SOUTH_HEADING = 180.0-NORTH_HEADING #this refers to the end with the start zone
-        current_heading = NORTH_HEADING
+        # NORTH_HEADING = (
+        #     self.get_imu_heading()
+        # )  # this refers to the end with the delivery zones
+        self.p4_target_heading = self.get_imu_heading()
+        self.p4_current_heading = self.p4_target_heading
         plough = []
         vision_data = {}
         block_line = []
-        state = ns_shared.MicroState.P4_SCAN
+        delivery_tolerance_y = 400
+        state = ns_shared.MicroState.P4_CALIBRATE_LEFT
         delivery_schedule = ns_shared.DeliverySchedule()
-        delivery_schedule.add(ns_shared.BlockColour.RED,1)
-        delivery_schedule.add(ns_shared.BlockColour.RED,2)
-        delivery_schedule.add(ns_shared.BlockColour.BLUE,2)
+        delivery_schedule.add(ns_shared.BlockColour.RED, 1)
+        delivery_schedule.add(ns_shared.BlockColour.RED, 2)
+        delivery_schedule.add(ns_shared.BlockColour.BLUE, 2)
+        self._sdk.mecanum_move_speed_times(0, 60, 30, 1)  # move onto field
 
         while not self.queue_channels.kill_flag.is_set():
+            self._sdk.screen_display_background(0)
+
             if not self.shared_state.phase_state.is_running.is_set():
                 self._sdk.mecanum_stop()
                 logging.info("Block sorting halted: Killed by user")
                 return
-            #first, poll data if needed
-            if state in (ns_shared.MicroState.P4_SCAN,ns_shared.MicroState.P4_ALIGN,ns_shared.MicroState.P4_DELIVER):
+            # first, poll data if needed
+            if state in (
+                ns_shared.MicroState.P4_SCAN,
+                ns_shared.MicroState.P4_ALIGN,
+                ns_shared.MicroState.P4_DELIVER,
+            ):
                 with self.shared_state.block_detection_data_lock:
                     vision_data = self.shared_state.block_detection_data.copy()
                 if not vision_data:
-                    logging.warning(f"Block sorting: No vision data was detected. Currently on {state}")
+                    logging.warning(
+                        f"Block sorting: No vision data was detected. Currently on {state}"
+                    )
                     time.sleep(0.01)
                     continue
                 if len(vision_data["blocks"]) > 5:
-                    logging.warning(f"Block sorting: Detected blocks > 5. Detected {len(vision_data["blocks"])}. Skipping this frame")
+                    logging.warning(
+                        f"Block sorting: Detected blocks > 5. Detected {len(vision_data['blocks'])}. Skipping this frame"
+                    )
                     time.sleep(0.01)
                     continue
-                block_line = vision_data["blocks"].sorted(key=lambda item: item["pixel_center"][0]) #sorts blocks from left to right
+                block_line = sorted(
+                    vision_data["blocks"], key=lambda item: item["pixel_center"][0]
+                )  # sorts blocks from left to right
 
             match state:
+                case ns_shared.MicroState.P4_CALIBRATE_LEFT:
+                    logging.info("Aligning left")
+                    self.bang_wall("left", 40, True)
+                    logging.info("Aligning left done")
+                    state = ns_shared.MicroState.P4_SCAN
+
+                case ns_shared.MicroState.P4_CALIBRATE_RIGHT:
+                    logging.info("Aligning right")
+                    self.bang_wall("right", 40, True)
+                    logging.info("Aligning right done")
+                    state = ns_shared.MicroState.P4_SCAN
+
                 case ns_shared.MicroState.P4_SCAN:
                     # FIX: Use sorted() to prevent block_line from becoming None
-                    block_line = sorted(vision_data["blocks"], key=lambda item: item["pixel_center"][0])
+                    block_line = sorted(
+                        vision_data["blocks"], key=lambda item: item["pixel_center"][0]
+                    )
 
                     if not block_line:
                         continue
@@ -145,20 +183,31 @@ class RobotHardware:
                     if best_candidate is not None:
                         # Store the chosen target in self so P4_ALIGN can track it across frames
                         self.tracked_target_block = best_candidate
-                        logging.info(f"Target selected! Color: {target_color}, CX: {best_candidate['pixel_center'][0]}, Priority Tier: {highest_priority}")
+                        if target_color == ns_shared.BlockColour.RED:
+                            self._sdk.screen_display_background(3)
+                        elif target_color == ns_shared.BlockColour.BLUE:
+                            self._sdk.screen_display_background(8)
+                        logging.info(
+                            f"Target selected! Color: {target_color}, CX: {best_candidate['pixel_center'][0]}, Priority Tier: {highest_priority}"
+                        )
                         state = ns_shared.MicroState.P4_ALIGN
                     else:
-                        logging.warning(f"No blocks matching color {target_color} found in the line.")
-
+                        logging.warning(
+                            f"No blocks matching color {target_color} found in the line."
+                        )
 
                 case ns_shared.MicroState.P4_ALIGN:
                     # 1. Sort the fresh frame from left to right
-                    block_line = sorted(vision_data["blocks"], key=lambda item: item["pixel_center"][0])
+                    block_line = sorted(
+                        vision_data["blocks"], key=lambda item: item["pixel_center"][0]
+                    )
 
                     if not block_line:
                         # If we lose visibility entirely, stop moving and wait for a frame recovery
                         self._sdk.mecanum_stop()
-                        logging.warning("P4_ALIGN: Blinded! No blocks visible. Holding position.")
+                        logging.warning(
+                            "P4_ALIGN: Blinded! No blocks visible. Holding position."
+                        )
                         continue
 
                     # 2. Re-locate our tracked target block in the new frame
@@ -167,7 +216,7 @@ class RobotHardware:
                     last_known_cx = self.tracked_target_block["pixel_center"][0]
 
                     current_target = None
-                    best_match_distance = float('inf')
+                    best_match_distance = float("inf")
 
                     for block in block_line:
                         if block["color"] != target_color:
@@ -180,7 +229,9 @@ class RobotHardware:
 
                     # Fallback if our specific target block disappeared completely
                     if current_target is None:
-                        logging.warning("P4_ALIGN: Target lost from frame! Dropping back to SCAN.")
+                        logging.warning(
+                            "P4_ALIGN: Target lost from frame! Dropping back to SCAN."
+                        )
                         self._sdk.mecanum_stop()
                         state = ns_shared.MicroState.P4_SCAN
                         continue
@@ -195,14 +246,17 @@ class RobotHardware:
 
                     # Compute heading correction relative to your North target
                     # (Assuming get_imu_heading() returns degrees)
-                    rotation_error_deg = NORTH_HEADING - self.get_imu_heading()
+
+                    rotation_error_deg = self.p4_target_heading - self.get_imu_heading()
 
                     # 4. Check if we are aligned within tolerance
                     # Convert alignment_tolerance from pixels if needed, or check absolute pixel error
                     if abs(pixel_error) <= alignment_tolerance:
                         # Success! Stop sideways movement and prepare to dive down the tunnel
                         self._sdk.mecanum_stop()
-                        logging.info(f"P4_ALIGN: Alignment achieved! Error: {pixel_error}px. Advancing to DASH.")
+                        logging.info(
+                            f"P4_ALIGN: Alignment achieved! Error: {pixel_error}px. Advancing to DASH."
+                        )
                         state = ns_shared.MicroState.P4_DASH
                     else:
                         # 5. Execute stationary strafe alignment
@@ -211,8 +265,12 @@ class RobotHardware:
                         normalized_strafe = pixel_error / 320.0
 
                         # Apply Proportional scaling logic for the commands before handing over
-                        KP_STRAFE = 1.5  # Controls how aggressively it ramps up to -1.0/1.0
-                        KP_ROTATION = 2.0  # Translates degrees error to a target velocity (deg/s)
+                        KP_STRAFE = (
+                            1.5  # Controls how aggressively it ramps up to -1.0/1.0
+                        )
+                        KP_ROTATION = (
+                            2.0  # Translates degrees error to a target velocity (deg/s)
+                        )
 
                         # Calculate commands, clamping the normalized strafe between -1.0 and 1.0
                         strafe_cmd = max(-1.0, min(1.0, normalized_strafe * KP_STRAFE))
@@ -220,29 +278,207 @@ class RobotHardware:
 
                         # Keep Y=0! Do not nose-dive forward until horizontal alignment is complete.
                         # x: -1.0 to 1.0 | y: -1.0 to 1.0 | r: deg/s
-                        self.mecanum_translate(strafe_cmd, 0.0, rotation_cmd_degs,MAX_SPEED,MAX_ROTATION_SPEED,MAX_STRAFE_SPEED)
+                        self.mecanum_translate(
+                            strafe_cmd,
+                            0.0,
+                            rotation_cmd_degs,
+                            MAX_SPEED,
+                            MAX_ROTATION_SPEED,
+                            MAX_STRAFE_SPEED,
+                        )
                 case ns_shared.MicroState.P4_DASH:
-                    #dash and collect in plough, maintaining heading to whatever is the current direction
+                    # dash and collect in plough, maintaining heading to whatever is the current direction
                     # check constantly to see if the block entered the plough, this part can be done later. for now assume it is a succesful catch
                     # Now, make a decision based on delivery schedule etc. Turn around plough and collect another, or deliver? Change state accordingly.
-                    pass
+
+                    # 1. Gather current frame details for wall clearing metrics
+                    # Note: We don't sort here because we only care about the absolute count of any color blocks remaining in view
+                    blocks_in_view = vision_data["blocks"]
+
+                    # 2. Check for the Exit Condition (Have we passed the wall?)
+                    if len(blocks_in_view) == 0:
+                        # -------------------------------------------------------------
+                        # ASSUMPTION LAND:
+                        # We have physically driven past the horizontal wall line.
+                        # Since the target block was aligned directly in our path,
+                        # we assume that it has now successfully been collected into our plough.
+                        # -------------------------------------------------------------
+                        target_color = delivery_schedule.get_current_colour()
+                        plough.append(target_color)
+                        logging.info(
+                            f"P4_DASH: Wall cleared! Successfully collected {target_color}. Plough content: {plough}"
+                        )
+
+                        # Stop the chassis immediately to avoid smashing into the delivery wall
+                        self._sdk.mecanum_stop()
+
+                        # now logic check. what to do next?
+                        if delivery_schedule.get_current_quantity() == len(plough):
+                            logging.info("delivering!")
+                            if target_color == ns_shared.BlockColour.RED:
+                                self.bang_wall(
+                                    "left", back_to_centre=False
+                                )  # red, bang left
+                            else:
+                                self.bang_wall(
+                                    "right", back_to_centre=False
+                                )  # blue, bang right
+                            state = ns_shared.MicroState.P4_DELIVER
+                        elif delivery_schedule.get_current_quantity() > len(plough):
+                            logging.info("looping for another one")
+                            state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH
+                        time.sleep(0.02)
+                        continue
+
+                    # 3. Heading Stabilization Loop (IMU-driven straight tracking)
+                    # We look forward along self.p4_target_heading (North). X=0 means no strafing allowed during the sprint.
+                    rotation_error_deg = self.p4_target_heading - self.get_imu_heading()
+                    KP_ROTATION_DASH = 2.5  # Tight constraint to keep chassis parallel to the 1m narrow walls
+                    rotation_cmd_degs = rotation_error_deg * KP_ROTATION_DASH
+
+                    # 4. Proportional Velocity & Slew Ramping Math (Anti-Jerk Logic)
+                    # Initialize target forward speed to full throttle
+                    target_y_power = 1.0
+
+                    # Proportional Slowdown Window: As we get extremely close to the block,
+                    # use its distance_z (or distance tracking approximation) to damp final approach speeds
+                    # We search for our specific tracking target to find its depth
+                    last_known_cx = (
+                        self.tracked_target_block["pixel_center"][0]
+                        if hasattr(self, "tracked_target_block")
+                        else 320
+                    )
+                    tracked_block_now = min(
+                        blocks_in_view,
+                        key=lambda b: abs(b["pixel_center"][0] - last_known_cx),
+                        default=None,
+                    )
+
+                    if tracked_block_now and "distance_z" in tracked_block_now:
+                        z_dist = tracked_block_now["distance_z"]
+                        # Adjust limits depending on your exact distance units (e.g., mm vs cm vs normalized values)
+                        SLOWDOWN_THRESHOLD_Z = 150.0
+                        MIN_SECURE_DASH_SPEED = 0.35  # The floor velocity so the robot never fully stalls out before hitting the block
+
+                        if z_dist < SLOWDOWN_THRESHOLD_Z:
+                            KP_FORWARD_DAMP = 1.0 / SLOWDOWN_THRESHOLD_Z
+                            target_y_power = max(
+                                MIN_SECURE_DASH_SPEED, z_dist * KP_FORWARD_DAMP
+                            )
+
+                    # 5. Slew Acceleration Limiter (Prevents snapping start-line jerks)
+                    # We track the last sent Y command using a persistent attribute to step speed incrementally
+                    if not hasattr(self, "_last_dash_y"):
+                        self._last_dash_y = 0.0
+
+                    MAX_FORWARD_JUMP_PER_STEP = (
+                        0.15  # Controls transition ramp profile from standstill to MAX
+                    )
+                    y_delta = target_y_power - self._last_dash_y
+
+                    if y_delta > MAX_FORWARD_JUMP_PER_STEP:
+                        actual_y_cmd = self._last_dash_y + MAX_FORWARD_JUMP_PER_STEP
+                    else:
+                        actual_y_cmd = target_y_power
+
+                    self._last_dash_y = actual_y_cmd
+
+                    # 6. Dispatch Translation Execution Vector
+                    # x: 0.0 (Strictly Straight Locked) | y: Smoothly Accelerated | r: IMU Guided
+                    self.mecanum_translate(
+                        0.0,
+                        actual_y_cmd,
+                        rotation_cmd_degs,
+                        MAX_DIVE_SPEED,  # Passes your newly requested velocity clamp
+                        MAX_ROTATION_SPEED,
+                        MAX_STRAFE_SPEED,
+                    )
                 case ns_shared.MicroState.P4_DELIVER:
-                    #deliver, worry about this later
-                    pass
+                    # deliver
+                    edge_y = -1
+                    for zone in vision_data["zones"]:
+                        if zone["color"] != target_color:
+                            edge_y = zone["bottom_edge_y"]
+
+                    if edge_y >= delivery_tolerance_y:
+                        # we are within tolerance.
+                        self._sdk.mecanum_stop()
+                        self._sdk.mecanum_move_speed_times(0, 30, 20, 1)
+                        time.sleep(2)
+                        self._sdk.mecanum_move_speed_times(0, 60, 20, 1)
+                        time.sleep(1)
+                        state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH
+                        logging.log("DELIVERED")
+                        continue
+
+                    self._sdk.mecanum_move_xyz(0, 20, 0)
+
                 case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH:
-                    #use imu and self.pivot_around_plough(), and turn around to snap directly to the opposite direction. After this back to scan.
+                    # use imu and self.pivot_around_plough(), and turn around to snap directly to the opposite direction. After this back to scan.
                     pass
                 case ns_shared.MicroState.P4_TURN_AROUND:
-                    #this is for post-delivery, where we can turn around as compact as possible without worrying about plough contents. After this back to scan.
+                    # this is for post-delivery, where we can turn around as compact as possible without worrying about plough contents. After this back to scan.
                     pass
 
             time.sleep(0.02)
 
         return
 
-    def mecanum_translate(self, vx, vy, omega, max_speed=80, max_rotation_speed=280, max_strafe_speed = 80):
+    def bang_wall(self, direction, speed_multiplier=40, back_to_centre=True):
+        """
+        Dictionary, left or right
+        """
+        tuneable_value = 3
+        value = 0
+        count = 0
+        velocity = 0
+        if direction == "left":
+            value = -1
+        elif direction == "right":
+            value = 1
+
+        logging.info(f"{value}")
+
+        while not self.queue_channels.kill_flag.is_set():
+            self._sdk.mecanum_move_xyz(
+                int(value * speed_multiplier),
+                0,
+                0,
+            )
+            count += 1
+
+            velocity = self.get_imu_gyro_x()
+            logging.info(f"{velocity}")
+
+            if count >= 10:
+                if velocity < tuneable_value:
+                    self._sdk.mecanum_stop()
+                    time.sleep(0.25)
+                    self.p4_target_heading = self.get_imu_heading()
+                    time.sleep(0.1)
+                    break
+            time.sleep(0.05)
+
+        logging.info("Centerlising")
+
+        if back_to_centre:
+            # self._sdk.mecanum_translate_speed_times(180 * value, 40, 50, 1)
+            # self._sdk.mecanum_move_xyz(36, 0, 0)
+            # sleep(5)
+
+            self._sdk.mecanum_move_xyz((40 * value * -1), 0, 0)
+            time.sleep(1)
+            self._sdk.mecanum_stop()
+            logging.info("Centerlising done")
+            return
+
+    def mecanum_translate(
+        self, vx, vy, omega, max_speed=80, max_rotation_speed=280, max_strafe_speed=80
+    ):
         self._sdk.mecanum_move_xyz(
-            int(vx * max_strafe_speed), int(vy * max_speed), int(omega * max_rotation_speed)
+            int(vx * max_strafe_speed),
+            int(vy * max_speed),
+            int(omega * max_rotation_speed),
         )
 
     def navigate_to_delivery_zone(
@@ -342,7 +578,7 @@ class RobotHardware:
         Accepts target rotation velocity directly in degrees per second (deg_s).
         """
         # Physical distance from the chassis center to the front plough tool in cm
-        D = 25.0
+        D = 19.0
 
         # 1. Calculate the clean rotation ratio for the SDK
         omega_ratio = deg_s / MAX_ROTATION_SPEED
@@ -574,13 +810,10 @@ class RobotHardware:
         # charge
         self._sdk.balance_set_acceleration(10)
         self._sdk.balance_move_speed_times(0, 80, 100, 1)
-        # stop
-        # self.SBB_AP_centralization_approaching(
-        #     distance=0.5, gap=20, fwd_spd=5, turn_spd=20, target_id=5
-        # )
-        # while not self.queue_channels.kill_flag.is_set():
-
+        time.sleep(3)
+        self._sdk.balance_move_speed_times(0, 40, 50, 1)
         self._sdk.screen_display_background(6)
+        time.sleep(3)
         self._sdk.balance_stop_balancing()
 
     # def register_villian(self):
@@ -591,13 +824,16 @@ class RobotHardware:
     def eng_ball_centralise_and_pick(
         self,
         max_speed=10,
-        strafe_speed=7,
+        strafe_speed=5,
         threshold=70,
         arm_down_distance=20,
         pick_distance=15,
     ):
+        self._sdk.screen_clear()
         self._sdk.mechanical_clamp_release()
         self._sdk.mechanical_joint_control(0, 0, 0, 1000)
+        self._sdk.mecanum_move_speed_times(0, 70, 70, 1)
+        time.sleep(3)
         pick_distance_attempt = 0
         stop_attempt = 0
         arm_down = False
@@ -615,10 +851,11 @@ class RobotHardware:
                     logging.warning("no red ball data")
                     time.sleep(0.02)
                     continue
-                else:
-                    # excellent, the ball is picked up and out of sight
-                    logging.info("weGOT IT")
-                    break
+                # else:
+                #     # excellent, the ball is picked up and out of sight
+                #     logging.info("weGOT IT")
+                #     break
+            self._sdk.screen_display_background(3)
 
             x_error = data["x_error"]
             normalized_x = data["normalized_x"]
@@ -638,22 +875,20 @@ class RobotHardware:
                 # original_y = y
                 self._sdk.mecanum_stop()
                 logger.info(f"{distance}")
-                self._sdk.mecanum_move_speed_times(0, 20, int((distance * 0.4 - 4)), 1)
+                self._sdk.mecanum_move_speed_times(0, 20, int((distance * 0.5 - 4)), 1)
                 time.sleep(1)
                 self._sdk.mecanum_stop()
-                time.sleep(1)
-                self._sdk.mechanical_joint_control(0, -30, -65, 1000)
-                time.sleep(1)
-                self._sdk.mechanical_joint_control(0, -30, -70, 1000)
-                time.sleep(1)
-                self._sdk.mechanical_joint_control(0, -30, -60, 1000)
-                time.sleep(1)
-                self._sdk.mechanical_joint_control(0, -30, -65, 1000)
-                time.sleep(1)
+                time.sleep(0.5)
+                self._sdk.mechanical_joint_control(0, -30, -70, 750)
+                time.sleep(0.75)
+                self._sdk.mechanical_joint_control(0, -30, -65, 750)
+                time.sleep(0.75)
+                # self._sdk.mechanical_joint_control(0, -30, -60, 1000)
+                # time.sleep(1)
+                # self._sdk.mechanical_joint_control(0, -30, -65, 1000)
+                # time.sleep(1)
                 self._sdk.mechanical_clamp_close()
                 time.sleep(3)
-                self._sdk.mechanical_joint_control(0, 90, 60, 1000)
-                time.sleep(1)
                 # self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
                 picked = True
                 self._sdk.screen_display_background(0)
@@ -665,260 +900,171 @@ class RobotHardware:
             #     self._sdk.mechanical_joint_control(0, 0, -60, 1000)
             #     arm_down = True
 
-            # elif x_error > (0 + threshold):
-            #     logger.info("GO RIGHT")
-            #     # thatmeans it's to the right
-            #     self._sdk.mecanum_move_xyz(strafe_speed, int(0.5 * max_speed), 0)
+            elif x_error > (0 + threshold):
+                logger.info("GO RIGHT")
+                # thatmeans it's to the right
+                self._sdk.mecanum_move_xyz(strafe_speed, int(max_speed), 0)
 
-            # elif x_error < (0 - threshold):
-            #     logger.info("GO LEFT")
-            #     # that means it's to the left i guess
-            #     self._sdk.mecanum_move_xyz(-strafe_speed, int(0.5 * max_speed), 0)
+            elif x_error < (0 - threshold):
+                logger.info("GO LEFT")
+                # that means it's to the left i guess
+                self._sdk.mecanum_move_xyz(-strafe_speed, int(max_speed), 0)
 
             else:
                 logger.info("GO STRAIGHT")
                 # within acceptable centre, so go forward
                 self._sdk.mecanum_move_xyz(0, max_speed, 0)
 
-    def red_ball_pickup(self):
-        """Detect the red ball and drive toward it; pick it up when close enough.
+    # def detect_horizontal_black_line(self, frame):
+    #     if frame is None:
+    #         return None
 
-        uses cv2 and numpy
-        """
-        CAMERA_FRAME_WIDTH = 640
-        CAMERA_FRAME_HEIGHT = 480
+    #     # 1. Convert to grayscale
+    #     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # Horizontal dead-zone around frame centre (320 px).
-        # Objects with center_x inside [LEFT_THRESHOLD, RIGHT_THRESHOLD] are treated as centred.
-        LEFT_THRESHOLD = 320 - 10
-        RIGHT_THRESHOLD = 320 + 10
+    #     # 2. Blur to smooth out wood grain texture noise
+    #     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # Ball bounding-box width (px) at which pickup is triggered.
-        # Increase if the robot is grabbing from too far away; decrease if it overshoots.
-        RED_BALL_PICKUP_THRESHOLD = 200
+    #     # 3. Sobel Y-gradient: Detects horizontal changes (edges that run left-to-right)
+    #     # cv2.CV_16S prevents clipping of negative gradients (going from light to dark floor)
+    #     sobel_y = cv2.Sobel(blurred, cv2.CV_16S, 0, 1, ksize=3)
+    #     abs_sobel_y = cv2.convertScaleAbs(sobel_y)
 
-        # Face bounding-box width (px) at the ideal throwing distance.
-        # Use the Face-Annotated Camera Feed to find the right value for your arena.
-        FACE_WIDTH_APPROACH_THRESHOLD = 80
+    #     # 4. Threshold to isolate the strongest horizontal edges
+    #     _, thresh = cv2.threshold(abs_sobel_y, 50, 255, cv2.THRESH_BINARY)
 
-        # ± tolerance on the face width target — prevents the robot oscillating around the goal.
-        FACE_WIDTH_APPROACH_TOLERANCE = 10
+    #     # 5. Morphological Close: Bridge small gaps across the line length
+    #     kernel = np.ones(
+    #         (3, 15), np.uint8
+    #     )  # Wide kernel to emphasize horizontal structures
+    #     closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
-        # --- Red ball HSV colour ranges ---
-        # Red wraps around 0° in the OpenCV hue circle, so two ranges are required.
-        RED_HSV_LOWER_1 = np.array([0, 70, 70])  # low-hue red  (0–10°)
-        RED_HSV_UPPER_1 = np.array([10, 255, 255])
-        RED_HSV_LOWER_2 = np.array([170, 70, 70])  # high-hue red (170–180°)
-        RED_HSV_UPPER_2 = np.array([180, 255, 255])
+    #     # 6. Find contours of the edges
+    #     contours, _ = cv2.findContours(
+    #         closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    #     )
 
-        while not self.queue_channels.kill_flag.is_set():
-            with self.shared_state.eng_camera_frame_lock:
-                if self.shared_state.eng_camera_frame is not None:
-                    img = self.shared_state.eng_camera_frame.copy()
-                else:
-                    logger.warning("THE THING'S NONE RIGHT NOW")
-                    continue
-            # Convert frame to HSV for colour-range detection
-            hsv_img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    #     best_line = None
+    #     max_width = 0
 
-            # Build a binary mask covering both red hue ranges, then combine with OR
-            mask1 = cv2.inRange(hsv_img, RED_HSV_LOWER_1, RED_HSV_UPPER_1)
-            mask2 = cv2.inRange(hsv_img, RED_HSV_LOWER_2, RED_HSV_UPPER_2)
-            mask = cv2.bitwise_or(mask1, mask2)
+    #     for contour in contours:
+    #         # Get a straight bounding rectangle
+    #         x, y, w, h = cv2.boundingRect(contour)
 
-            # Find contours of the masked (red) regions
-            # RETR_TREE retrieves the full contour hierarchy (overkill here, but harmless)
-            contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    #         # --- The Anti-Floorboard Filters ---
+    #         # 1. Reject tiny noise
+    #         if w < 50 or h < 5:
+    #             continue
 
-            if contours:
-                # Work with the largest red region to ignore small noise blobs
-                largest_contour = max(contours, key=cv2.contourArea)
-                area = cv2.contourArea(largest_contour)
+    #         # 2. Aspect Ratio: A horizontal line must be significantly wider than it is tall
+    #         aspect_ratio = w / float(h)
+    #         if aspect_ratio < 4.0:  # Adjust this if your line is thicker/closer
+    #             continue
 
-                if area > 500:  # Minimum area threshold — filters out tiny noise specks
-                    # Get the axis-aligned bounding box: top-left (x,y), width w, height h
-                    x, y, w, h = cv2.boundingRect(largest_contour)
-                    center_x = x + w // 2
-                    center_y = y + h // 2
+    #         # 3. Confirm it's actually dark/black
+    #         # Sample the pixels inside the bounding box from the original gray image
+    #         roi = gray[y : y + h, x : x + w]
+    #         mean_brightness = np.mean(roi)
+    #         if (
+    #             mean_brightness > 100
+    #         ):  # Reject if the inside is too bright (not a black line)
+    #             continue
 
-                    # Annotate the debug frame with box and label
-                    cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 255), 2)
-                    label = f"Center_x: {center_x} Area:{area} w:{w}"
-                    cv2.putText(
-                        img,
-                        label,
-                        (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (0, 255, 255),
-                        2,
-                    )
+    #         # Keep the widest matching horizontal line
+    #         if w > max_width:
+    #             max_width = w
+    #             # Center coordinates of the detected line
+    #             center_x = x + (w / 2)
+    #             center_y = y + (h / 2)
+    #             best_line = (center_x, center_y, w, h)
 
-                    if w > RED_BALL_PICKUP_THRESHOLD:
-                        # Ball is large enough (close enough) — execute pickup sequence
-                        self._sdk.mecanum_stop()
-                        time.sleep(1)
+    #     return best_line  # Returns (cx, cy, width, height) or None
 
-                        # Open gripper, lower arm to ball level, close gripper, raise arm
-                        # joint_control(j1_base, j2_mid, j3_tip, duration_ms)
-                        # Negative j2/j3 angles tilt the arm downward toward the floor.
-                        self._sdk.mechanical_clamp_release()  # Open gripper
-                        self._sdk.mechanical_joint_control(
-                            0, -30, -55, 1500
-                        )  # Lower arm to ball
-                        time.sleep(2)  # Wait for arm to reach position
-                        self._sdk.mechanical_clamp_close()  # Grab the ball
-                        time.sleep(1)  # Wait for gripper to close
-                        self._sdk.mechanical_joint_control(
-                            0, 50, 80, 1500
-                        )  # Raise arm to carry position
-                        state = "Search Face"  # Ball is in hand — move to next phase
+    # def eng_find_face_and_stop_line(self, y_threshold):
+    #     while not self.queue_channels.kill_flag.is_set():
+    #         with self.shared_state.eng_camera_frame_lock:
+    #             frame = self.shared_state.eng_camera_frame
+    #         data = self.detect_horizontal_black_line(frame)
+    #         if not data:
+    #             logging.warning("NO LINE DETECTED")
+    #             time.sleep(0.02)
+    #             continue
 
-                    elif center_x < LEFT_THRESHOLD:
-                        # Ball is to the left of centre — strafe left to align
-                        self._sdk.mecanum_move_xyz(-5, 0, 0)
-                    elif center_x > RIGHT_THRESHOLD:
-                        # Ball is to the right of centre — strafe right to align
-                        self._sdk.mecanum_move_xyz(5, 0, 0)
-                    else:
-                        # Ball is centred but not yet close enough — drive forward
-                        self._sdk.mecanum_move_xyz(0, 5, 0)
-                        import cv2
-                        import numpy as np
-
-    def detect_horizontal_black_line(self, frame):
-        if frame is None:
-            return None
-
-        # 1. Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-        # 2. Blur to smooth out wood grain texture noise
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-
-        # 3. Sobel Y-gradient: Detects horizontal changes (edges that run left-to-right)
-        # cv2.CV_16S prevents clipping of negative gradients (going from light to dark floor)
-        sobel_y = cv2.Sobel(blurred, cv2.CV_16S, 0, 1, ksize=3)
-        abs_sobel_y = cv2.convertScaleAbs(sobel_y)
-
-        # 4. Threshold to isolate the strongest horizontal edges
-        _, thresh = cv2.threshold(abs_sobel_y, 50, 255, cv2.THRESH_BINARY)
-
-        # 5. Morphological Close: Bridge small gaps across the line length
-        kernel = np.ones(
-            (3, 15), np.uint8
-        )  # Wide kernel to emphasize horizontal structures
-        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
-
-        # 6. Find contours of the edges
-        contours, _ = cv2.findContours(
-            closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        best_line = None
-        max_width = 0
-
-        for contour in contours:
-            # Get a straight bounding rectangle
-            x, y, w, h = cv2.boundingRect(contour)
-
-            # --- The Anti-Floorboard Filters ---
-            # 1. Reject tiny noise
-            if w < 50 or h < 5:
-                continue
-
-            # 2. Aspect Ratio: A horizontal line must be significantly wider than it is tall
-            aspect_ratio = w / float(h)
-            if aspect_ratio < 4.0:  # Adjust this if your line is thicker/closer
-                continue
-
-            # 3. Confirm it's actually dark/black
-            # Sample the pixels inside the bounding box from the original gray image
-            roi = gray[y : y + h, x : x + w]
-            mean_brightness = np.mean(roi)
-            if (
-                mean_brightness > 100
-            ):  # Reject if the inside is too bright (not a black line)
-                continue
-
-            # Keep the widest matching horizontal line
-            if w > max_width:
-                max_width = w
-                # Center coordinates of the detected line
-                center_x = x + (w / 2)
-                center_y = y + (h / 2)
-                best_line = (center_x, center_y, w, h)
-
-        return best_line  # Returns (cx, cy, width, height) or None
-
-    def eng_find_face_and_stop_line(self, y_threshold):
-        while not self.queue_channels.kill_flag.is_set():
-            with self.shared_state.eng_camera_frame_lock:
-                frame = self.shared_state.eng_camera_frame
-            data = self.detect_horizontal_black_line(frame)
-            if not data:
-                logging.warning("NO LINE DETECTED")
-                time.sleep(0.02)
-                continue
-
-    def eng_throw_ball(self, villain_scans=10, width_of_face=5):
+    def eng_throw_ball(self, villain_scans=1, width_of_face=5):
         self._sdk.mechanical_joint_control(0, 90, 60, 1000)
+
         self._sdk.mecanum_stop()
         villain_data = []
         center_x_data = []
         width_data = []
 
-        while (not self.queue_channels.kill_flag.is_set()) and len(
-            villain_data
-        ) < villain_scans:
-            # make sure we get ten face readings. Maybe overkill, maybe shld tune.
+        force_mult_k = 10
+
+        while len(villain_data) < villain_scans:
+            # make sure we get five face readings. Maybe overkill, maybe shld tune.
+            if self.queue_channels.kill_flag.is_set():
+                return
             face_data = self._sdk.get_face_recognition_total_info()
 
             for _ in face_data:
-                if _[0] == "villain2" or _[0] == "villain":
+                if _[0].startswith("villain"):
                     villain_data.append(_)
                     center_x_data.append(_[1])
                     width_data.append(_[4])
                     logging.info(
                         f"Villain detected at ({_[1]},{_[2]}), {len(villain_data)}/{villain_scans}"
                     )
+
                     break
             if not villain_data:
                 logging.warning("no villain detected bleh")
                 continue
 
-        # now that we found the guy
-        # now extract face data from sdk list (and get average center x)
-        # name (str): Name (or “Unknown” for unrecognized faces)
-        # center_x (float): Center x-coordinate
-        # center_y (float): Center y-coordinate
-        # height (float): Height
-        # width (float): Width
-        # area (float): Area
+        # Safety check to prevent division by zero if data collection failed
+        # if not center_x_data or not width_data:
+        #     logging.warning("Aborting: Collected lists are empty.")
+        #     return
 
         mean_center_x = sum(center_x_data) / len(center_x_data)
         mean_width = sum(width_data) / len(width_data)
 
-        # 1. Calculate actual distance (Keep this if you need it for arm trajectory)
-        distance = (width_of_face * ns_shared.CAMERA_FOCAL_LENGTH) / mean_width
-        logging.info(f"Target is approximately {distance:.1f} cm away.")
-
-        # 2. Calculate horizontal angular offset from center lens
+        # Constants for tracking geometry
         IMAGE_CENTER_X = 320  # Assuming 640 width frame
+        DEPTH_Y = 40.0  # Constant distance from robot to row of faces in cm
+
+        # 1. Calculate horizontal pixel error from the center lens
         pixel_error = mean_center_x - IMAGE_CENTER_X
 
-        # atan returns radians; convert to degrees
-        angle_to_turn_rad = math.atan(pixel_error / ns_shared.CAMERA_FOCAL_LENGTH)
-        angle_to_turn = int(math.degrees(angle_to_turn_rad))
+        # 2. Convert pixel error to physical centimeters using the scaling ratio
+        # (pixels) * (cm per pixel) = cm offset
+        offset_x_cm = pixel_error * (width_of_face / mean_width)
 
+        # 3. Calculate true absolute distance (Hypotenuse of the triangle)
+        # Using Pythagorean theorem instead of focal length
+        actual_distance = math.sqrt(offset_x_cm**2 + DEPTH_Y**2)
         logging.info(
-            f"Target pixel offset: {pixel_error}px -> Turning {angle_to_turn} degrees to center up!"
+            f"Target horizontal offset: {offset_x_cm:.1f} cm. Straight line distance: {actual_distance:.1f} cm."
         )
 
-        # 3. Fire your SDK joint controls
-        self._sdk.mechanical_single_joint_control(1, angle_to_turn, 500)
+        # 4. Calculate the turn angle using right-triangle trigonometry
+        # atan(opposite / adjacent) -> atan(offset_x_cm / DEPTH_Y)
+        angle_to_turn_rad = math.atan(offset_x_cm / DEPTH_Y)
+        angle_to_turn = -int(math.degrees(angle_to_turn_rad))
+
+        logging.info(
+            f"Target pixel offset: {pixel_error:.1f}px -> Turning {angle_to_turn} degrees to center up!"
+        )
+
+        # 5. Fire your SDK joint controls
+        self._sdk.mechanical_joint_control(angle_to_turn, 90, 60, 1000)
         time.sleep(1)
-        self._sdk.mechanical_joint_control(angle_to_turn, 45, 50, 500)
+        self._sdk.mechanical_joint_control(
+            int(angle_to_turn),
+            -5,
+            -10,
+            200,
+        )
+        time.sleep(0.1)
         self._sdk.mechanical_clamp_release()
         time.sleep(1)
 
@@ -987,3 +1133,7 @@ class RobotHardware:
     def get_imu_heading(self):
         data = self._sdk.SENSOR.getIMUSensorValue()
         return data.yaw
+
+    def get_imu_gyro_x(self):
+        data = self._sdk.SENSOR.getIMUSensorValue()
+        return data.gyro_x

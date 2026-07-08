@@ -30,8 +30,8 @@ class RobotController:
         self.engbot = engbot
         self.sbbot = sbbot
 
-        # self.async_setup_engbot()
-        # self.async_setup_sbbot()
+        self.async_setup_engbot()
+        self.async_setup_sbbot()
 
     # def _check(self):
     #     """Checks if the frontend requested a stop.
@@ -69,7 +69,9 @@ class RobotController:
                 ]
             )
             self.engbot.register_face_from_file("villain2", ns_shared.VILLAIN_JPEG_PATH)
+            self.engbot._sdk.mechanical_clamp_close()
             self.engbot._sdk.mechanical_joint_control(0, 90, 0, 1000)
+
         except Exception as e:
             logger.error(f"ENGBot initialization failed: {e}. Running offline.")
 
@@ -191,8 +193,11 @@ class RobotController:
         # self.engbot._sdk.mecanum_stop()
         # return
         self.queue_channels.ball_detection_active_flag.set()
-        # self.engbot.eng_ball_centralise_and_pick()
+        self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
+        self.engbot._sdk.mechanical_joint_control(0, 90, 60, 1000)
+        time.sleep(1)
+        self.engbot._sdk.mecanum_move_speed_times(0, 80, 40, 1)
         self.engbot.eng_throw_ball()
 
         # temp
@@ -212,238 +217,239 @@ class RobotController:
 
     def phase4(self, MAX_SPEED=40, MAX_ROTATION_SPEED=40):
         self.queue_channels.block_detection_active_flag.set()
+        self.engbot.new_block_sorting()
+        self.queue_channels.block_detection_active_flag.clear()
+        # CAMERA_HEIGHT = 480
+        # CAPTURE_THRESHOLD_Y = CAMERA_HEIGHT - 50  # Bottom 50px capture zone
+        # SEARCH_WINDOW = 70  # Frame-to-frame pixel tracking radius
 
-        CAMERA_HEIGHT = 480
-        CAPTURE_THRESHOLD_Y = CAMERA_HEIGHT - 50  # Bottom 50px capture zone
-        SEARCH_WINDOW = 70  # Frame-to-frame pixel tracking radius
+        # # PID Tuning Parameter for Vision Tracking Loop (Proportional Gain)
+        # Kp = 0.0015
 
-        # PID Tuning Parameter for Vision Tracking Loop (Proportional Gain)
-        Kp = 0.0015
+        # # Conversion constant: Pixels to Degrees for IMU spatial anchoring
+        # # Assuming standard ~60 degree horizontal camera FOV: 60 deg / 640 px = ~0.09375
+        # PX_TO_DEGREES = 0.09375
 
-        # Conversion constant: Pixels to Degrees for IMU spatial anchoring
-        # Assuming standard ~60 degree horizontal camera FOV: 60 deg / 640 px = ~0.09375
-        PX_TO_DEGREES = 0.09375
+        # # delivery_schedule = [
+        # #     {"color": ns_shared.BlockColour.BLUE, "qty": 2},
+        # #     {"color": ns_shared.BlockColour.RED, "qty": 2},
+        # #     {"color": ns_shared.BlockColour.RED, "qty": 1},
+        # # ]
+        # delivery_schedule = [{"color": ns_shared.BlockColour.RED, "qty": 2}]
 
-        # delivery_schedule = [
-        #     {"color": ns_shared.BlockColour.BLUE, "qty": 2},
-        #     {"color": ns_shared.BlockColour.RED, "qty": 2},
-        #     {"color": ns_shared.BlockColour.RED, "qty": 1},
-        # ]
-        delivery_schedule = [{"color": ns_shared.BlockColour.RED, "qty": 2}]
+        # for trip in delivery_schedule:
+        #     target_color = trip["color"]
+        #     target_qty = trip["qty"]
+        #     plough_inventory = []
 
-        for trip in delivery_schedule:
-            target_color = trip["color"]
-            target_qty = trip["qty"]
-            plough_inventory = []
+        #     logging.info(
+        #         f"Starting trip: Collecting {target_qty} {target_color.name} blocks."
+        #     )
 
-            logging.info(
-                f"Starting trip: Collecting {target_qty} {target_color.name} blocks."
-            )
+        #     # --- SUB-STATE 1: COLLECTION LOOP ---
+        #     locked_target = None  # Holds active target dictionary
+        #     backup_block_heading = (
+        #         None  # Stores absolute room heading of a secondary target
+        #     )
 
-            # --- SUB-STATE 1: COLLECTION LOOP ---
-            locked_target = None  # Holds active target dictionary
-            backup_block_heading = (
-                None  # Stores absolute room heading of a secondary target
-            )
+        #     while (
+        #         len(plough_inventory) < target_qty
+        #         and not self.queue_channels.kill_flag.is_set()
+        #     ):
+        #         # 1. Thread-safe retrieval of detection payload
 
-            while (
-                len(plough_inventory) < target_qty
-                and not self.queue_channels.kill_flag.is_set()
-            ):
-                # 1. Thread-safe retrieval of detection payload
+        #         with self.shared_state.phase_state.lock:
+        #             # FIX 3: Added missing .is_set() and changed break to return to prevent accidental delivery triggers
+        #             if not self.shared_state.phase_state.is_running.is_set():
+        #                 self.engbot._sdk.mecanum_stop()
+        #                 return
+        #         with self.shared_state.block_detection_data_lock:
+        #             detection_payload = self.shared_state.block_detection_data
 
-                with self.shared_state.phase_state.lock:
-                    # FIX 3: Added missing .is_set() and changed break to return to prevent accidental delivery triggers
-                    if not self.shared_state.phase_state.is_running.is_set():
-                        self.engbot._sdk.mecanum_stop()
-                        return
-                with self.shared_state.block_detection_data_lock:
-                    detection_payload = self.shared_state.block_detection_data
+        #         if isinstance(detection_payload, dict):
+        #             visible_blocks = detection_payload.get("blocks", [])
+        #             visible_zones = detection_payload.get("zones", [])
+        #         else:
+        #             visible_blocks = []
+        #             visible_zones = []
 
-                if isinstance(detection_payload, dict):
-                    visible_blocks = detection_payload.get("blocks", [])
-                    visible_zones = detection_payload.get("zones", [])
-                else:
-                    visible_blocks = []
-                    visible_zones = []
+        #         # 2. Maintain Target Lock or Acquire New Target
+        #         tracked_block = None
+        #         if locked_target is not None:
+        #             for block in visible_blocks:
+        #                 if block["color"] == target_color:
+        #                     dist = np.hypot(
+        #                         block["pixel_center"][0]
+        #                         - locked_target["pixel_center"][0],
+        #                         block["pixel_center"][1]
+        #                         - locked_target["pixel_center"][1],
+        #                     )
+        #                     if dist < SEARCH_WINDOW:
+        #                         tracked_block = block
+        #                         break
 
-                # 2. Maintain Target Lock or Acquire New Target
-                tracked_block = None
-                if locked_target is not None:
-                    for block in visible_blocks:
-                        if block["color"] == target_color:
-                            dist = np.hypot(
-                                block["pixel_center"][0]
-                                - locked_target["pixel_center"][0],
-                                block["pixel_center"][1]
-                                - locked_target["pixel_center"][1],
-                            )
-                            if dist < SEARCH_WINDOW:
-                                tracked_block = block
-                                break
+        #         if tracked_block is None:
+        #             valid_blocks = [
+        #                 b for b in visible_blocks if b["color"] == target_color
+        #             ]
+        #             if valid_blocks:
+        #                 tracked_block = min(valid_blocks, key=lambda b: b["distance_z"])
+        #                 logging.info("New target block locked via greedy depth search.")
 
-                if tracked_block is None:
-                    valid_blocks = [
-                        b for b in visible_blocks if b["color"] == target_color
-                    ]
-                    if valid_blocks:
-                        tracked_block = min(valid_blocks, key=lambda b: b["distance_z"])
-                        logging.info("New target block locked via greedy depth search.")
+        #         locked_target = tracked_block
+        #         obstacle_x = None
 
-                locked_target = tracked_block
-                obstacle_x = None
+        #         # 3. Navigation Decision Engine
+        #         if locked_target is not None:
+        #             cx, cy = locked_target["pixel_center"]
 
-                # 3. Navigation Decision Engine
-                if locked_target is not None:
-                    cx, cy = locked_target["pixel_center"]
+        #             # --- VISUAL IMU MEMORY SNAPSHOT ---
+        #             # While driving toward our primary target, look out for other blocks of the same color
+        #             # --- VISUAL IMU MEMORY SNAPSHOT (UPDATED FOR CLOSER BLOCK PRIORITIZATION) ---
+        #             # Filter out the current locked target, keeping only other blocks of the same color
+        #             backup_candidates = [
+        #                 b
+        #                 for b in visible_blocks
+        #                 if b["color"] == target_color
+        #                 and b["pixel_center"] != locked_target["pixel_center"]
+        #             ]
 
-                    # --- VISUAL IMU MEMORY SNAPSHOT ---
-                    # While driving toward our primary target, look out for other blocks of the same color
-                    # --- VISUAL IMU MEMORY SNAPSHOT (UPDATED FOR CLOSER BLOCK PRIORITIZATION) ---
-                    # Filter out the current locked target, keeping only other blocks of the same color
-                    backup_candidates = [
-                        b
-                        for b in visible_blocks
-                        if b["color"] == target_color
-                        and b["pixel_center"] != locked_target["pixel_center"]
-                    ]
+        #             if backup_candidates:
+        #                 # Sort the remaining candidates so the one with the smallest distance_z is first
+        #                 closest_backup = min(
+        #                     backup_candidates, key=lambda b: b["distance_z"]
+        #                 )
 
-                    if backup_candidates:
-                        # Sort the remaining candidates so the one with the smallest distance_z is first
-                        closest_backup = min(
-                            backup_candidates, key=lambda b: b["distance_z"]
-                        )
+        #                 bx, _ = closest_backup["pixel_center"]
+        #                 pixel_offset_backup = bx - 320
+        #                 relative_angle = pixel_offset_backup * PX_TO_DEGREES
 
-                        bx, _ = closest_backup["pixel_center"]
-                        pixel_offset_backup = bx - 320
-                        relative_angle = pixel_offset_backup * PX_TO_DEGREES
+        #                 # Store the absolute field position of the NEXT NEAREST block
+        #                 current_imu = self.engbot.get_imu_heading()
+        #                 # backup_block_heading = current_imu + relative_angle
 
-                        # Store the absolute field position of the NEXT NEAREST block
-                        current_imu = self.engbot.get_imu_heading()
-                        # backup_block_heading = current_imu + relative_angle
+        #             # Check if path is blocked by an incorrect color block closer than the target
+        #             path_is_blocked = False
+        #             for block in visible_blocks:
+        #                 if (
+        #                     block["color"] != target_color
+        #                     and block["pixel_center"][1] > cy
+        #                 ):
+        #                     if (
+        #                         150 < block["pixel_center"][0] < 490
+        #                     ):  # Corridor pixel boundary
+        #                         path_is_blocked = True
+        #                         obstacle_x = block["pixel_center"][0]
+        #                         break
 
-                    # Check if path is blocked by an incorrect color block closer than the target
-                    path_is_blocked = False
-                    for block in visible_blocks:
-                        if (
-                            block["color"] != target_color
-                            and block["pixel_center"][1] > cy
-                        ):
-                            if (
-                                150 < block["pixel_center"][0] < 490
-                            ):  # Corridor pixel boundary
-                                path_is_blocked = True
-                                obstacle_x = block["pixel_center"][0]
-                                break
+        #             # if path_is_blocked and obstacle_x is not None:
+        #             #     logging.warning("Path blocked! Strafing around obstacle...")
+        #             #     strafe_direction = -1.0 if obstacle_x > 320 else 1.0
+        #             #     self.engbot.mecanum_translate(
+        #             #         strafe_direction, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED
+        #             #     )
+        #             #     time.sleep(0.3)  # Execute sidestep pulse
+        #             #     continue
 
-                    # if path_is_blocked and obstacle_x is not None:
-                    #     logging.warning("Path blocked! Strafing around obstacle...")
-                    #     strafe_direction = -1.0 if obstacle_x > 320 else 1.0
-                    #     self.engbot.mecanum_translate(
-                    #         strafe_direction, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED
-                    #     )
-                    #     time.sleep(0.3)  # Execute sidestep pulse
-                    #     continue
+        #             # Check if block has reached collection threshold (Bottom 50px)
+        #             if cy >= CAPTURE_THRESHOLD_Y:
+        #                 logging.info(
+        #                     "Block reached bottom threshold. Engaging intake plunge."
+        #                 )
 
-                    # Check if block has reached collection threshold (Bottom 50px)
-                    if cy >= CAPTURE_THRESHOLD_Y:
-                        logging.info(
-                            "Block reached bottom threshold. Engaging intake plunge."
-                        )
+        #                 # Drive forward blindly to firmly capture block into the mechanism
+        #                 self.engbot.mecanum_translate(
+        #                     0, 1.0, 0, MAX_SPEED, MAX_ROTATION_SPEED
+        #                 )
+        #                 time.sleep(0.4)
+        #                 self.engbot._sdk.mecanum_stop()
 
-                        # Drive forward blindly to firmly capture block into the mechanism
-                        self.engbot.mecanum_translate(
-                            0, 1.0, 0, MAX_SPEED, MAX_ROTATION_SPEED
-                        )
-                        time.sleep(0.4)
-                        self.engbot._sdk.mecanum_stop()
+        #                 # Commit to internal inventory tracking
+        #                 plough_inventory.append(target_color)
+        #                 locked_target = None  # Wipe target lock for next acquisition
+        #                 time.sleep(0.5)  # Let video pipeline latency clear
+        #                 continue
 
-                        # Commit to internal inventory tracking
-                        plough_inventory.append(target_color)
-                        locked_target = None  # Wipe target lock for next acquisition
-                        time.sleep(0.5)  # Let video pipeline latency clear
-                        continue
+        #             # --- APPROACH PROFILE (Proportional Vision Tracking) ---
+        #             image_center_x = 320
+        #             pixel_error = cx - image_center_x
 
-                    # --- APPROACH PROFILE (Proportional Vision Tracking) ---
-                    image_center_x = 320
-                    pixel_error = cx - image_center_x
+        #             # Compute smooth turn using a P-control calculation
+        #             omega_turn = np.clip(pixel_error * Kp, -0.3, 0.3)
 
-                    # Compute smooth turn using a P-control calculation
-                    omega_turn = np.clip(pixel_error * Kp, -0.3, 0.3)
+        #             # Drive forward while constantly tracking the target heading
+        #             self.engbot.mecanum_translate(
+        #                 0, 0.5, omega_turn, MAX_SPEED, MAX_ROTATION_SPEED
+        #             )
 
-                    # Drive forward while constantly tracking the target heading
-                    self.engbot.mecanum_translate(
-                        0, 0.5, omega_turn, MAX_SPEED, MAX_ROTATION_SPEED
-                    )
+        #         else:
+        #             # --- SEARCH OR SPIN PHASE (No target currently visible) ---
+        #             if backup_block_heading is not None:
+        #                 # Leverage IMU memory spatial map to rotate back toward the next block
+        #                 current_imu = self.engbot.get_imu_heading()
+        #                 imu_error = backup_block_heading - current_imu
 
-                else:
-                    # --- SEARCH OR SPIN PHASE (No target currently visible) ---
-                    if backup_block_heading is not None:
-                        # Leverage IMU memory spatial map to rotate back toward the next block
-                        current_imu = self.engbot.get_imu_heading()
-                        imu_error = backup_block_heading - current_imu
+        #                 # Normalize angle error between -180 and 180
+        #                 imu_error = (imu_error + 180) % 360 - 180
 
-                        # Normalize angle error between -180 and 180
-                        imu_error = (imu_error + 180) % 360 - 180
+        #                 if abs(imu_error) > 5.0:
+        #                     logging.info(
+        #                         f"Target lost. Navigating to saved IMU position: {backup_block_heading:.1f}°"
+        #                     )
+        #                     omega_memory_turn = 0.2 if imu_error > 0 else -0.2
 
-                        if abs(imu_error) > 5.0:
-                            logging.info(
-                                f"Target lost. Navigating to saved IMU position: {backup_block_heading:.1f}°"
-                            )
-                            omega_memory_turn = 0.2 if imu_error > 0 else -0.2
+        #                     # Decide whether to spin on center or pivot around the bumper
+        #                     if len(plough_inventory) > 0:
+        #                         self.engbot.pivot_around_plough(
+        #                             omega_memory_turn, MAX_SPEED, MAX_ROTATION_SPEED
+        #                         )
+        #                     else:
+        #                         self.engbot.mecanum_translate(
+        #                             0,
+        #                             0,
+        #                             omega_memory_turn,
+        #                             MAX_SPEED,
+        #                             MAX_ROTATION_SPEED,
+        #                         )
+        #                 else:
+        #                     # We are facing the memory target direction; clear it and let visual loop track
+        #                     logging.info(
+        #                         "Arrived at remembered target orientation. Re-engaging camera tracking."
+        #                     )
+        #                     backup_block_heading = None
+        #             else:
+        #                 # Blind fallback tracking if both visual system and memory are dry
+        #                 if len(plough_inventory) > 0:
+        #                     logging.info(
+        #                         "Target lost. Pivoting around plough to look for blocks..."
+        #                     )
+        #                     self.engbot.pivot_around_plough(
+        #                         0.2, MAX_SPEED, MAX_ROTATION_SPEED
+        #                     )
+        #                 else:
+        #                     logging.info(
+        #                         "Target lost. Spinning on center axis to look for blocks..."
+        #                     )
+        #                     self.engbot.mecanum_translate(
+        #                         0, 0, 0.2, MAX_SPEED, MAX_ROTATION_SPEED
+        #                     )
 
-                            # Decide whether to spin on center or pivot around the bumper
-                            if len(plough_inventory) > 0:
-                                self.engbot.pivot_around_plough(
-                                    omega_memory_turn, MAX_SPEED, MAX_ROTATION_SPEED
-                                )
-                            else:
-                                self.engbot.mecanum_translate(
-                                    0,
-                                    0,
-                                    omega_memory_turn,
-                                    MAX_SPEED,
-                                    MAX_ROTATION_SPEED,
-                                )
-                        else:
-                            # We are facing the memory target direction; clear it and let visual loop track
-                            logging.info(
-                                "Arrived at remembered target orientation. Re-engaging camera tracking."
-                            )
-                            backup_block_heading = None
-                    else:
-                        # Blind fallback tracking if both visual system and memory are dry
-                        if len(plough_inventory) > 0:
-                            logging.info(
-                                "Target lost. Pivoting around plough to look for blocks..."
-                            )
-                            self.engbot.pivot_around_plough(
-                                0.2, MAX_SPEED, MAX_ROTATION_SPEED
-                            )
-                        else:
-                            logging.info(
-                                "Target lost. Spinning on center axis to look for blocks..."
-                            )
-                            self.engbot.mecanum_translate(
-                                0, 0, 0.2, MAX_SPEED, MAX_ROTATION_SPEED
-                            )
+        #         time.sleep(0.05)  # Match 20Hz cycle rate
 
-                time.sleep(0.05)  # Match 20Hz cycle rate
+        #     # --- SUB-STATE 2: DELIVERY EXECUTIVE ---
+        #     logging.info(
+        #         f"Plough limit reached ({len(plough_inventory)} blocks). Proceeding to delivery zone."
+        #     )
+        #     self.engbot.navigate_to_delivery_zone(
+        #         target_color, MAX_SPEED, MAX_ROTATION_SPEED
+        #     )
+        #     time.sleep(0.25)
+        #     if not delivery_schedule.index(trip) == len(delivery_schedule) - 1:
+        #         self.engbot.return_to_field()
 
-            # --- SUB-STATE 2: DELIVERY EXECUTIVE ---
-            logging.info(
-                f"Plough limit reached ({len(plough_inventory)} blocks). Proceeding to delivery zone."
-            )
-            self.engbot.navigate_to_delivery_zone(
-                target_color, MAX_SPEED, MAX_ROTATION_SPEED
-            )
-            time.sleep(0.25)
-            if not delivery_schedule.index(trip) == len(delivery_schedule) - 1:
-                self.engbot.return_to_field()
-
-        logger.info("Phase 4 completed successfully")
-        self.engbot._sdk.mecanum_stop()
-        self.advance_phase(keep_activated=False)
+        # logger.info("Phase 4 completed successfully")
+        # self.engbot._sdk.mecanum_stop()
+        # self.advance_phase(keep_activated=False)
 
     def phase4a(self):
         # call opcontrol portion
@@ -454,51 +460,76 @@ class RobotController:
         logging.info("you can kiss it you can break all the rules")
 
     def opcontrol_pose(self):
-            logging.info("opcontrol pose started")
-            self.queue_channels.pose_recog_active_flag.set()
-            self.max_speed = 40  # Regular maximum speed cap
-            self.max_rotation_speed = 120
+        logging.info("opcontrol pose started")
+        self.queue_channels.pose_recog_active_flag.set()
+        self.max_speed = 40  # Regular maximum speed cap
+        current_max_speed = self.max_speed
+        self.max_rotation_speed = 120
 
-            while not self.queue_channels.kill_flag.is_set():
-                if not self.shared_state.phase_state.is_running.is_set():
-                    self.engbot._sdk.mecanum_stop()
-                    self.queue_channels.pose_recog_active_flag.clear()
-                    self.queue_channels.turbo_drive_flag.clear()
-                    return True
+        # Track the state of the turbo flag from the previous iteration
+        was_turbo_active = False
 
-                try:
-                    x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
-                except queue.Empty:
-                    self.engbot._sdk.mecanum_stop()
-                    continue
+        while not self.queue_channels.kill_flag.is_set():
+            if not self.shared_state.phase_state.is_running.is_set():
+                self.engbot._sdk.mecanum_stop()
+                self.queue_channels.pose_recog_active_flag.clear()
+                self.queue_channels.turbo_drive_flag.clear()
+                return True
 
-                print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
+            try:
+                x_val, y_val, r_val = self.queue_channels.pose_drive.get(timeout=0.1)
+            except queue.Empty:
+                self.engbot._sdk.mecanum_stop()
+                continue
 
-                # --- DYNAMIC SPEED UNLOCK ---
-                # If turbo_drive_flag is active, push up to the robot's max capability (80 cm/s)
-                current_max_speed = 80 if self.queue_channels.turbo_drive_flag.is_set() else self.max_speed
+            print(f"Pose Vector: {x_val:.2f}, {y_val:.2f}, {r_val:.2f}")
 
-                x_movement = int(
-                    self.engbot.map_and_clamp(x_val, -1, 1, -current_max_speed, current_max_speed)
+            # --- DYNAMIC SPEED UNLOCK (EDGE-TRIGGERED) ---
+            is_turbo_currently_set = self.queue_channels.turbo_drive_flag.is_set()
+
+            # 1. Rising Edge: Turbo just turned ON
+            if is_turbo_currently_set and not was_turbo_active:
+                logging.info("Turbo activated! Initializing raw motor speed override.")
+                self.engbot._sdk.mecanum_motor_control(300, 300, 300, 300)
+                current_max_speed = (
+                    100  # Unlock higher mapping scale (adjust this ceiling as needed!)
                 )
-                y_movement = int(
-                    self.engbot.map_and_clamp(y_val, -1, 1, -current_max_speed, current_max_speed)
-                )
-                r_movement = int(
-                    self.engbot.map_and_clamp(
-                        r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
-                    )
-                )
+                was_turbo_active = True
 
-                if x_movement == 0 and y_movement == 0 and r_movement == 0:
-                    self.engbot._sdk.mecanum_stop()
-                else:
-                    self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+            # 2. Falling Edge: Turbo just turned OFF
+            elif not is_turbo_currently_set and was_turbo_active:
+                logging.info("Turbo deactivated. Returning to normal speed limits.")
+                # If your SDK requires stopping or a specific command to exit raw control mode, do it here:
+                self.engbot._sdk.mecanum_stop()
+                current_max_speed = self.max_speed  # Snap back to regular 40 max cap
+                was_turbo_active = False
 
-            self.engbot._sdk.mecanum_stop()
-            self.queue_channels.pose_recog_active_flag.clear()
-            self.queue_channels.turbo_drive_flag.clear()
-            return True
+            # --- MOVEMENT PROCESSING ---
+            x_movement = int(
+                self.engbot.map_and_clamp(
+                    x_val, -1, 1, -current_max_speed, current_max_speed
+                )
+            )
+            y_movement = int(
+                self.engbot.map_and_clamp(
+                    y_val, -1, 1, -current_max_speed, current_max_speed
+                )
+            )
+            r_movement = int(
+                self.engbot.map_and_clamp(
+                    r_val, -1, 1, -self.max_rotation_speed, self.max_rotation_speed
+                )
+            )
+
+            if x_movement == 0 and y_movement == 0 and r_movement == 0:
+                self.engbot._sdk.mecanum_stop()
+            else:
+                self.engbot._sdk.mecanum_move_xyz(x_movement, y_movement, r_movement)
+
+        self.engbot._sdk.mecanum_stop()
+        self.queue_channels.pose_recog_active_flag.clear()
+        self.queue_channels.turbo_drive_flag.clear()
+        return True
 
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""

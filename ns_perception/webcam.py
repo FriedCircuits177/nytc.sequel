@@ -94,9 +94,6 @@ class WebcamProcessor:
         if frame is None:
             return None
 
-        frame = cv2.flip(frame, 1)
-
-
         if frame.shape[0] != self.height or frame.shape[1] != self.width:
             frame = cv2.resize(frame, (self.width, self.height))
 
@@ -164,16 +161,28 @@ class WebcamProcessor:
             if current_fps > self.max_fps:
                 self.max_fps = current_fps
 
-            self.fps_text = f"FPS: {current_fps} AVG: {int(mean_fps)} MAX: {self.max_fps}"
+            self.fps_text = (
+                f"FPS: {current_fps} AVG: {int(mean_fps)} MAX: {self.max_fps}"
+            )
             self.fps_last_time = now
 
         # Burn FPS text with a dark high-contrast shadow offset by 1 pixel
-        #cv2.putText(frame, self.fps_text, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
-        cv2.putText(frame, self.fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1, cv2.LINE_AA)
+        # cv2.putText(frame, self.fps_text, (11, 31), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+        cv2.putText(
+            frame,
+            self.fps_text,
+            (10, 30),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
 
         # Original logic: Normalise and push to DearPyGUI texture format
         np.divide(frame, 255.0, out=self.output[:, :, :3], casting="unsafe")
         self.output[:, :, 3] = 1.0
+        self.output = cv2.flip(self.output, 1)
 
         return self.output.copy()
 

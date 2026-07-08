@@ -102,11 +102,13 @@ class ProcessManager:
             logging.error("Debug mode is deprecated!")
         else:
             self.threads = [
-                ns_shared.construct_thread(self.robot_controller.mainloop, daemon=False),
-                # ns_shared.construct_thread(self.sbbot_camera.mainloop),
-                # ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
-                # ns_shared.construct_thread(self.engbot_camera.mainloop),
-                # ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
+                ns_shared.construct_thread(
+                    self.robot_controller.mainloop, daemon=False
+                ),
+                ns_shared.construct_thread(self.sbbot_camera.mainloop),
+                ns_shared.construct_thread(self.sbbot_camera_gui_processor.mainloop),
+                ns_shared.construct_thread(self.engbot_camera.mainloop),
+                ns_shared.construct_thread(self.engbot_camera_gui_processor.mainloop),
                 ns_shared.construct_thread(self.webcam.mainloop),
                 ns_shared.construct_thread(self.webcam_processor.mainloop),
                 ns_shared.construct_thread(self.block_detection.mainloop, daemon=True),
