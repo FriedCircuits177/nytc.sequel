@@ -23,7 +23,7 @@ class BlockDetector:
         self.calibrated_focal_length = 120.61
 
         # --- TUNING PARAMETERS ---
-        self.min_contour_area = 200
+        self.min_contour_area = 150
         self.morphology_kernel = np.ones((3, 3), np.uint8)
 
         logger.info("Multi-color BlockDetector initialized successfully")

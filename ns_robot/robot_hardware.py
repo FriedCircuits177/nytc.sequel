@@ -74,7 +74,7 @@ class RobotHardware:
         MAX_DIVE_SPEED=50,
         MAX_STRAFE_SPEED=40,
         MAX_ROTATION_SPEED=20,
-        alignment_tolerance=40,
+        alignment_tolerance=20,
     ):
         logging.info("STARTING BLOCK SORTING. HERE GOES NOTHING.")
         # NORTH_HEADING = (
@@ -114,12 +114,12 @@ class RobotHardware:
                     )
                     time.sleep(0.01)
                     continue
-                if len(vision_data["blocks"]) > 5:
-                    logging.warning(
-                        f"Block sorting: Detected blocks > 5. Detected {len(vision_data['blocks'])}. Skipping this frame"
-                    )
-                    time.sleep(0.01)
-                    continue
+                # if len(vision_data["blocks"]) <= 5:
+                #     logging.warning(
+                #         f"Block sorting: Detected blocks <= 5. Detected {len(vision_data['blocks'])}. Skipping this frame"
+                #     )
+                #     time.sleep(0.01)
+                #     continue
                 block_line = sorted(
                     vision_data["blocks"], key=lambda item: item["pixel_center"][0]
                 )  # sorts blocks from left to right
@@ -278,15 +278,16 @@ class RobotHardware:
 
                         # Keep Y=0! Do not nose-dive forward until horizontal alignment is complete.
                         # x: -1.0 to 1.0 | y: -1.0 to 1.0 | r: deg/s
-                        self.mecanum_translate(
+                        self.mecanum_translate( #turning turned off.
                             strafe_cmd,
                             0.0,
-                            rotation_cmd_degs,
+                            0,
                             MAX_SPEED,
                             MAX_ROTATION_SPEED,
-                            MAX_STRAFE_SPEED,
+                            int(MAX_STRAFE_SPEED/2),
                         )
                 case ns_shared.MicroState.P4_DASH:
+                    logging.info("DASHING")
                     # dash and collect in plough, maintaining heading to whatever is the current direction
                     # check constantly to see if the block entered the plough, this part can be done later. for now assume it is a succesful catch
                     # Now, make a decision based on delivery schedule etc. Turn around plough and collect another, or deliver? Change state accordingly.
@@ -385,10 +386,10 @@ class RobotHardware:
 
                     # 6. Dispatch Translation Execution Vector
                     # x: 0.0 (Strictly Straight Locked) | y: Smoothly Accelerated | r: IMU Guided
-                    self.mecanum_translate(
+                    self.mecanum_translate( #turned off imu rotation
                         0.0,
                         actual_y_cmd,
-                        rotation_cmd_degs,
+                        0,
                         MAX_DIVE_SPEED,  # Passes your newly requested velocity clamp
                         MAX_ROTATION_SPEED,
                         MAX_STRAFE_SPEED,
@@ -411,20 +412,92 @@ class RobotHardware:
                         logging.log("DELIVERED")
                         continue
 
-                    self._sdk.mecanum_move_xyz(0, 20, 0)
+                    self._sdk.mecanum_move_xyz(0, 20, 0) ]
 
                 case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH:
-                    # use imu and self.pivot_around_plough(), and turn around to snap directly to the opposite direction. After this back to scan.
-                    pass
+                    # 1. Flip the target heading to the exact opposite direction
+                    self.p4_target_heading = 180.0 - self.p4_target_heading
+
+                    # Initialize persistent PID tracking variables on the object context
+                    self._turn_integral = 0.0
+                    self._turn_last_error = None
+
+                    # 2. Enter the local blocking alignment loop
+                    while not self.queue_channels.kill_flag.is_set():
+                        # Check user kill flag inside the nested loop
+                        if not self.shared_state.phase_state.is_running.is_set():
+                            self._sdk.mecanum_stop()
+                            logging.info("Block sorting halted during turn: Killed by user")
+                            return
+
+                        # Update current heading and calculate error in degrees
+                        self.p4_current_heading = self.get_imu_heading()
+                        heading_error = self.p4_target_heading - self.p4_current_heading
+
+                        # Handle 180-degree wrap-around math to ensure shortest turning path
+                        while heading_error > 180.0:
+                            heading_error -= 360.0
+                        while heading_error < -180.0:
+                            heading_error += 360.0
+
+                        # 3. Check for the Alignment Exit Condition
+                        TURN_TOLERANCE_DEG = 2.5
+                        if abs(heading_error) <= TURN_TOLERANCE_DEG:
+                            # Active braking to arrest any remaining inertia
+                            self._sdk.mecanum_stop()
+                            logging.info(f"P4_TURN: Aligned with target {self.p4_target_heading} deg. Back to SCAN.")
+
+                            # Safely clean up PID memory variables
+                            if hasattr(self, '_turn_integral'):
+                                delattr(self, '_turn_integral')
+                            if hasattr(self, '_turn_last_error'):
+                                delattr(self, '_turn_last_error')
+
+                            # Break the inner while loop to return to the main state machine
+                            state = ns_shared.MicroState.P4_SCAN
+                            break
+
+                        # 4. PID Math Engine (Outputs deg/s)
+                        KP_TURN = 2.5   # Proportional gain
+                        KI_TURN = 0.05  # Integral gain
+                        KD_TURN = 0.15  # Derivative gain
+
+                        # Initialize last error on the first run of this loop sequence
+                        if self._turn_last_error is None:
+                            self._turn_last_error = heading_error
+
+                        # Accumulate integral over time (assuming 20ms execution steps)
+                        self._turn_integral += heading_error * 0.02
+                        self._turn_integral = max(-5.0, min(5.0, self._turn_integral)) # Cap windup
+
+                        # Calculate derivative rate of change
+                        error_derivative = (heading_error - self._turn_last_error) / 0.02
+                        self._turn_last_error = heading_error
+
+                        # Combine everything to get the target rotation speed in deg/s
+                        rotation_speed_degs = (heading_error * KP_TURN) + (self._turn_integral * KI_TURN) + (error_derivative * KD_TURN)
+
+                        # Enforce a minimum speed floor to prevent low-voltage stiction stalls near the target
+                        MIN_TURN_SPEED = 8.0  # deg/s
+                        if abs(rotation_speed_degs) < MIN_TURN_SPEED:
+                            rotation_speed_degs = MIN_TURN_SPEED if rotation_speed_degs > 0 else -MIN_TURN_SPEED
+
+                        # Enforce maximum rotation limit caps
+                        rotation_speed_degs = max(-MAX_ROTATION_SPEED, min(MAX_ROTATION_SPEED, rotation_speed_degs))
+
+                        # 5. Hand over computed velocity to your function
+                        # Passes the calculated speed directly as degrees per second
+                        self.pivot_around_plough(rotation_speed_degs)
+                        time.sleep(0.02)
                 case ns_shared.MicroState.P4_TURN_AROUND:
                     # this is for post-delivery, where we can turn around as compact as possible without worrying about plough contents. After this back to scan.
                     pass
 
-            time.sleep(0.02)
+            time.sleep(0.005)
 
         return
 
-    def bang_wall(self, direction, speed_multiplier=40, back_to_centre=True):
+    def bang_wall(self, direction, speed_multiplier=80, timeout=3.0,back_to_centre=True):
         """
         Dictionary, left or right
         """
@@ -438,6 +511,7 @@ class RobotHardware:
             value = 1
 
         logging.info(f"{value}")
+        start_time = time.time()
 
         while not self.queue_channels.kill_flag.is_set():
             self._sdk.mecanum_move_xyz(
@@ -447,26 +521,29 @@ class RobotHardware:
             )
             count += 1
 
-            velocity = self.get_imu_gyro_x()
+            acceleration = self.get_imu_gyro_x()
             logging.info(f"{velocity}")
 
-            if count >= 10:
-                if velocity < tuneable_value:
-                    self._sdk.mecanum_stop()
-                    time.sleep(0.25)
-                    self.p4_target_heading = self.get_imu_heading()
-                    time.sleep(0.1)
-                    break
-            time.sleep(0.05)
+            # if count >= 1000:
+            #     if abs(velocity) < abs(tuneable_value):
+            #         self._sdk.mecanum_stop()
+            #         time.sleep(0.25)
+            #         self.p4_target_heading = self.get_imu_heading()
+            #         time.sleep(0.1)
+            #         break
+            if (time.time() - start_time) >= timeout:
+                break
 
-        logging.info("Centerlising")
+            time.sleep(0.01)
+
+        logging.info("Centralising")
 
         if back_to_centre:
             # self._sdk.mecanum_translate_speed_times(180 * value, 40, 50, 1)
             # self._sdk.mecanum_move_xyz(36, 0, 0)
             # sleep(5)
 
-            self._sdk.mecanum_move_xyz((40 * value * -1), 0, 0)
+            self._sdk.mecanum_move_xyz((60 * value * -1), 0, 0)
             time.sleep(1)
             self._sdk.mecanum_stop()
             logging.info("Centerlising done")
@@ -1007,6 +1084,7 @@ class RobotHardware:
             face_data = self._sdk.get_face_recognition_total_info()
 
             for _ in face_data:
+                logging.info(f"I found {_}")
                 if _[0].startswith("villain"):
                     villain_data.append(_)
                     center_x_data.append(_[1])
@@ -1136,4 +1214,4 @@ class RobotHardware:
 
     def get_imu_gyro_x(self):
         data = self._sdk.SENSOR.getIMUSensorValue()
-        return data.gyro_x
+        return data.accel_x
