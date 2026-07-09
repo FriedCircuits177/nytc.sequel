@@ -103,8 +103,8 @@ class MediaPipePoseRecog:
                 is_extended_right = (r_wrist.x < r_elbow.x) and (r_elbow.x < r_shoulder.x)
 
                 # Combine checks to declare a valid T-Pose (Allowing a safe 5-10 degree tolerance window)
-                l_t_pose = (l_straightness > 0.95) and (l_horizontality > 0.93) and is_extended_left
-                r_t_pose = (r_straightness > 0.95) and (r_horizontality > 0.93) and is_extended_right
+                l_t_pose = (l_straightness > 0.9) and (l_horizontality > 0.9) and is_extended_left
+                r_t_pose = (r_straightness > 0.9) and (r_horizontality > 0.9) and is_extended_right
 
                 t_pose_instant = l_t_pose and r_t_pose
 

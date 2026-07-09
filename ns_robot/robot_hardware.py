@@ -14,6 +14,7 @@ from ugot import ugot
 from ugot.src.http_client import upload_vision_picture
 
 import ns_shared
+from ns_shared.terms import BlockColour
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ class RobotHardware:
     def new_block_sorting(
         self,
         MAX_SPEED=40,
-        MAX_DIVE_SPEED=50,
+        MAX_DIVE_SPEED=60,
         MAX_STRAFE_SPEED=40,
         MAX_ROTATION_SPEED=20,
         alignment_tolerance=20,
@@ -92,6 +93,7 @@ class RobotHardware:
         delivery_schedule.add(ns_shared.BlockColour.RED, 2)
         delivery_schedule.add(ns_shared.BlockColour.BLUE, 2)
         self._sdk.mecanum_move_speed_times(0, 60, 30, 1)  # move onto field
+        time.sleep(1.5)
 
         while not self.queue_channels.kill_flag.is_set():
             self._sdk.screen_display_background(0)
@@ -105,6 +107,7 @@ class RobotHardware:
                 ns_shared.MicroState.P4_SCAN,
                 ns_shared.MicroState.P4_ALIGN,
                 ns_shared.MicroState.P4_DELIVER,
+                ns_shared.MicroState.P4_DASH
             ):
                 with self.shared_state.block_detection_data_lock:
                     vision_data = self.shared_state.block_detection_data.copy()
@@ -287,211 +290,254 @@ class RobotHardware:
                             int(MAX_STRAFE_SPEED/2),
                         )
                 case ns_shared.MicroState.P4_DASH:
-                    logging.info("DASHING")
-                    # dash and collect in plough, maintaining heading to whatever is the current direction
-                    # check constantly to see if the block entered the plough, this part can be done later. for now assume it is a succesful catch
-                    # Now, make a decision based on delivery schedule etc. Turn around plough and collect another, or deliver? Change state accordingly.
+                    blocks_in_view = block_line
+                    logging.info(f"DASHING, {len(blocks_in_view)} visible")
+                    dash_distance = 100
+                    self._sdk.mecanum_stop()
+                    time.sleep(0.5)
+                    self._sdk.mecanum_move_speed_times(0,MAX_DIVE_SPEED,dash_distance,1)
+                    target_color = delivery_schedule.get_current_colour()
+                    plough.append(target_color)
+                    if delivery_schedule.get_current_quantity() == len(plough):
+                        logging.info("delivering!")
+                        if target_color == ns_shared.BlockColour.RED:
+                            self.bang_wall(
+                                "left", back_to_centre=False
+                            )  # red, bang left
+                        else:
+                            self.bang_wall(
+                                "right", back_to_centre=False
+                            )  # blue, bang right
+                        state = ns_shared.MicroState.P4_DELIVER
+                    elif delivery_schedule.get_current_quantity() > len(plough):
+                        logging.info("looping for another one")
+                        state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH_CW
+                    time.sleep(0.02)
+                    continue
+                # case ns_shared.MicroState.P4_DASH:
 
-                    # 1. Gather current frame details for wall clearing metrics
-                    # Note: We don't sort here because we only care about the absolute count of any color blocks remaining in view
-                    blocks_in_view = vision_data["blocks"]
+                #     # dash and collect in plough, maintaining heading to whatever is the current direction
+                #     # check constantly to see if the block entered the plough, this part can be done later. for now assume it is a succesful catch
+                #     # Now, make a decision based on delivery schedule etc. Turn around plough and collect another, or deliver? Change state accordingly.
 
-                    # 2. Check for the Exit Condition (Have we passed the wall?)
-                    if len(blocks_in_view) == 0:
-                        # -------------------------------------------------------------
-                        # ASSUMPTION LAND:
-                        # We have physically driven past the horizontal wall line.
-                        # Since the target block was aligned directly in our path,
-                        # we assume that it has now successfully been collected into our plough.
-                        # -------------------------------------------------------------
-                        target_color = delivery_schedule.get_current_colour()
-                        plough.append(target_color)
-                        logging.info(
-                            f"P4_DASH: Wall cleared! Successfully collected {target_color}. Plough content: {plough}"
-                        )
+                #     # 1. Gather current frame details for wall clearing metrics
+                #     # Note: We don't sort here because we only care about the absolute count of any color blocks remaining in view
 
-                        # Stop the chassis immediately to avoid smashing into the delivery wall
-                        self._sdk.mecanum_stop()
+                #     blocks_in_view = block_line
+                #     logging.info(f"DASHING, {len(blocks_in_view)} visible")
 
-                        # now logic check. what to do next?
-                        if delivery_schedule.get_current_quantity() == len(plough):
-                            logging.info("delivering!")
-                            if target_color == ns_shared.BlockColour.RED:
-                                self.bang_wall(
-                                    "left", back_to_centre=False
-                                )  # red, bang left
-                            else:
-                                self.bang_wall(
-                                    "right", back_to_centre=False
-                                )  # blue, bang right
-                            state = ns_shared.MicroState.P4_DELIVER
-                        elif delivery_schedule.get_current_quantity() > len(plough):
-                            logging.info("looping for another one")
-                            state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH
-                        time.sleep(0.02)
-                        continue
+                #     # 2. Check for the Exit Condition (Have we passed the wall?)
+                #     if len(blocks_in_view) == 0:
+                #         # -------------------------------------------------------------
+                #         # ASSUMPTION LAND:
+                #         # We have physically driven past the horizontal wall line.
+                #         # Since the target block was aligned directly in our path,
+                #         # we assume that it has now successfully been collected into our plough.
+                #         # -------------------------------------------------------------
+                #         target_color = delivery_schedule.get_current_colour()
+                #         plough.append(target_color)
+                #         logging.info(
+                #             f"P4_DASH: Wall cleared! Successfully collected {target_color}. Plough content: {plough}"
+                #         )
 
-                    # 3. Heading Stabilization Loop (IMU-driven straight tracking)
-                    # We look forward along self.p4_target_heading (North). X=0 means no strafing allowed during the sprint.
-                    rotation_error_deg = self.p4_target_heading - self.get_imu_heading()
-                    KP_ROTATION_DASH = 2.5  # Tight constraint to keep chassis parallel to the 1m narrow walls
-                    rotation_cmd_degs = rotation_error_deg * KP_ROTATION_DASH
+                #         # Stop the chassis immediately to avoid smashing into the delivery wall
+                #         self._sdk.mecanum_stop()
+                #         self._sdk.mecanum_move_speed_times(0,MAX_DIVE_SPEED,20,1) #dumb move
+                #         time.sleep(0.5)
+                #         # now logic check. what to do next?
+                #         v
 
-                    # 4. Proportional Velocity & Slew Ramping Math (Anti-Jerk Logic)
-                    # Initialize target forward speed to full throttle
-                    target_y_power = 1.0
+                #     # 3. Heading Stabilization Loop (IMU-driven straight tracking)
+                #     # We look forward along self.p4_target_heading (North). X=0 means no strafing allowed during the sprint.
+                #     rotation_error_deg = self.p4_target_heading - self.get_imu_heading()
+                #     KP_ROTATION_DASH = 2.5  # Tight constraint to keep chassis parallel to the 1m narrow walls
+                #     rotation_cmd_degs = rotation_error_deg * KP_ROTATION_DASH
 
-                    # Proportional Slowdown Window: As we get extremely close to the block,
-                    # use its distance_z (or distance tracking approximation) to damp final approach speeds
-                    # We search for our specific tracking target to find its depth
-                    last_known_cx = (
-                        self.tracked_target_block["pixel_center"][0]
-                        if hasattr(self, "tracked_target_block")
-                        else 320
-                    )
-                    tracked_block_now = min(
-                        blocks_in_view,
-                        key=lambda b: abs(b["pixel_center"][0] - last_known_cx),
-                        default=None,
-                    )
+                #     # 4. Proportional Velocity & Slew Ramping Math (Anti-Jerk Logic)
+                #     # Initialize target forward speed to full throttle
+                #     target_y_power = 1.0
 
-                    if tracked_block_now and "distance_z" in tracked_block_now:
-                        z_dist = tracked_block_now["distance_z"]
-                        # Adjust limits depending on your exact distance units (e.g., mm vs cm vs normalized values)
-                        SLOWDOWN_THRESHOLD_Z = 150.0
-                        MIN_SECURE_DASH_SPEED = 0.35  # The floor velocity so the robot never fully stalls out before hitting the block
+                #     # Proportional Slowdown Window: As we get extremely close to the block,
+                #     # use its distance_z (or distance tracking approximation) to damp final approach speeds
+                #     # We search for our specific tracking target to find its depth
+                #     last_known_cx = (
+                #         self.tracked_target_block["pixel_center"][0]
+                #         if hasattr(self, "tracked_target_block")
+                #         else 320
+                #     )
+                #     tracked_block_now = min(
+                #         blocks_in_view,
+                #         key=lambda b: abs(b["pixel_center"][0] - last_known_cx),
+                #         default=None,
+                #     )
 
-                        if z_dist < SLOWDOWN_THRESHOLD_Z:
-                            KP_FORWARD_DAMP = 1.0 / SLOWDOWN_THRESHOLD_Z
-                            target_y_power = max(
-                                MIN_SECURE_DASH_SPEED, z_dist * KP_FORWARD_DAMP
-                            )
+                #     if tracked_block_now and "distance_z" in tracked_block_now:
+                #         z_dist = tracked_block_now["distance_z"]
+                #         # Adjust limits depending on your exact distance units (e.g., mm vs cm vs normalized values)
+                #         SLOWDOWN_THRESHOLD_Z = 150.0
+                #         MIN_SECURE_DASH_SPEED = 0.35  # The floor velocity so the robot never fully stalls out before hitting the block
 
-                    # 5. Slew Acceleration Limiter (Prevents snapping start-line jerks)
-                    # We track the last sent Y command using a persistent attribute to step speed incrementally
-                    if not hasattr(self, "_last_dash_y"):
-                        self._last_dash_y = 0.0
+                #         if z_dist < SLOWDOWN_THRESHOLD_Z:
+                #             KP_FORWARD_DAMP = 1.0 / SLOWDOWN_THRESHOLD_Z
+                #             target_y_power = max(
+                #                 MIN_SECURE_DASH_SPEED, z_dist * KP_FORWARD_DAMP
+                #             )
 
-                    MAX_FORWARD_JUMP_PER_STEP = (
-                        0.15  # Controls transition ramp profile from standstill to MAX
-                    )
-                    y_delta = target_y_power - self._last_dash_y
+                #     # 5. Slew Acceleration Limiter (Prevents snapping start-line jerks)
+                #     # We track the last sent Y command using a persistent attribute to step speed incrementally
+                #     if not hasattr(self, "_last_dash_y"):
+                #         self._last_dash_y = 0.0
 
-                    if y_delta > MAX_FORWARD_JUMP_PER_STEP:
-                        actual_y_cmd = self._last_dash_y + MAX_FORWARD_JUMP_PER_STEP
-                    else:
-                        actual_y_cmd = target_y_power
+                #     MAX_FORWARD_JUMP_PER_STEP = (
+                #         0.15  # Controls transition ramp profile from standstill to MAX
+                #     )
+                #     y_delta = target_y_power - self._last_dash_y
 
-                    self._last_dash_y = actual_y_cmd
+                #     if y_delta > MAX_FORWARD_JUMP_PER_STEP:
+                #         actual_y_cmd = self._last_dash_y + MAX_FORWARD_JUMP_PER_STEP
+                #     else:
+                #         actual_y_cmd = target_y_power
 
-                    # 6. Dispatch Translation Execution Vector
-                    # x: 0.0 (Strictly Straight Locked) | y: Smoothly Accelerated | r: IMU Guided
-                    self.mecanum_translate( #turned off imu rotation
-                        0.0,
-                        actual_y_cmd,
-                        0,
-                        MAX_DIVE_SPEED,  # Passes your newly requested velocity clamp
-                        MAX_ROTATION_SPEED,
-                        MAX_STRAFE_SPEED,
-                    )
+                #     self._last_dash_y = actual_y_cmd
+
+                #     # 6. Dispatch Translation Execution Vector
+                #     # x: 0.0 (Strictly Straight Locked) | y: Smoothly Accelerated | r: IMU Guided
+                #     self.mecanum_translate( #turned off imu rotation
+                #         0.0,
+                #         actual_y_cmd,
+                #         0,
+                #         MAX_DIVE_SPEED,  # Passes your newly requested velocity clamp
+                #         MAX_ROTATION_SPEED,
+                #         MAX_STRAFE_SPEED,
+                #     )
                 case ns_shared.MicroState.P4_DELIVER:
                     # deliver
-                    edge_y = -1
-                    for zone in vision_data["zones"]:
-                        if zone["color"] != target_color:
-                            edge_y = zone["bottom_edge_y"]
+                    #
+                    logging.info("TIME FOR DELIVERY")
+                    target_color = delivery_schedule.get_current_colour()
 
-                    if edge_y >= delivery_tolerance_y:
-                        # we are within tolerance.
-                        self._sdk.mecanum_stop()
-                        self._sdk.mecanum_move_speed_times(0, 30, 20, 1)
-                        time.sleep(2)
-                        self._sdk.mecanum_move_speed_times(0, 60, 20, 1)
-                        time.sleep(1)
-                        state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH
-                        logging.log("DELIVERED")
-                        continue
+                    self._sdk.mecanum_move_speed_times(0,MAX_SPEED,50,1)
+                    time.sleep(1)
+                    self._sdk.mecanum_stop()
+                    self._sdk.mecanum_move_speed_times(0, 30, 20, 1)
+                    time.sleep(2)
+                    self._sdk.mecanum_move_speed_times(0, 60, 20, 1)
+                    time.sleep(1)
+                    if target_color == ns_shared.BlockColour.RED:
+                        self.bang_wall("left",40,True)
+                    else:
+                        self.bang_wall("right",40,True)
+                    state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH_ACW
+                    logging.info("DELIVERED")
 
-                    self._sdk.mecanum_move_xyz(0, 20, 0) ]
+                    continue
+                    # edge_y = -1
+                    # logging.info(f"zones: {len(vision_data["zones"])}")
+                    # for zone in vision_data["zones"]:
+                    #     if zone["color"] != target_color:
+                    #         edge_y = zone["bottom_edge_y"]
 
-                case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH:
-                    # 1. Flip the target heading to the exact opposite direction
-                    self.p4_target_heading = 180.0 - self.p4_target_heading
+                    # if edge_y >= delivery_tolerance_y:
+                    #     # we are within tolerance.
+                    #     self._sdk.mecanum_stop()
+                    #     self._sdk.mecanum_move_speed_times(0, 30, 20, 1)
+                    #     time.sleep(2)
+                    #     self._sdk.mecanum_move_speed_times(0, 60, 20, 1)
+                    #     time.sleep(1)
+                    #     state = ns_shared.MicroState.P4_TURN_AROUND_PLOUGH
+                    #     logging.info("DELIVERED")
+                    #     continue
 
-                    # Initialize persistent PID tracking variables on the object context
-                    self._turn_integral = 0.0
-                    self._turn_last_error = None
+                    #self._sdk.mecanum_move_xyz(0, 20, 0)
 
-                    # 2. Enter the local blocking alignment loop
-                    while not self.queue_channels.kill_flag.is_set():
-                        # Check user kill flag inside the nested loop
-                        if not self.shared_state.phase_state.is_running.is_set():
-                            self._sdk.mecanum_stop()
-                            logging.info("Block sorting halted during turn: Killed by user")
-                            return
+                # case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH:
+                #     # 1. Flip the target heading to the exact opposite direction
+                #     self.p4_target_heading = 180.0 - self.p4_target_heading
 
-                        # Update current heading and calculate error in degrees
-                        self.p4_current_heading = self.get_imu_heading()
-                        heading_error = self.p4_target_heading - self.p4_current_heading
+                #     # Initialize persistent PID tracking variables on the object context
+                #     self._turn_integral = 0.0
+                #     self._turn_last_error = None
 
-                        # Handle 180-degree wrap-around math to ensure shortest turning path
-                        while heading_error > 180.0:
-                            heading_error -= 360.0
-                        while heading_error < -180.0:
-                            heading_error += 360.0
+                #     # 2. Enter the local blocking alignment loop
+                #     while not self.queue_channels.kill_flag.is_set():
+                #         # Check user kill flag inside the nested loop
+                #         if not self.shared_state.phase_state.is_running.is_set():
+                #             self._sdk.mecanum_stop()
+                #             logging.info("Block sorting halted during turn: Killed by user")
+                #             return
 
-                        # 3. Check for the Alignment Exit Condition
-                        TURN_TOLERANCE_DEG = 2.5
-                        if abs(heading_error) <= TURN_TOLERANCE_DEG:
-                            # Active braking to arrest any remaining inertia
-                            self._sdk.mecanum_stop()
-                            logging.info(f"P4_TURN: Aligned with target {self.p4_target_heading} deg. Back to SCAN.")
+                #         # Update current heading and calculate error in degrees
+                #         self.p4_current_heading = self.get_imu_heading()
+                #         heading_error = self.p4_target_heading - self.p4_current_heading
 
-                            # Safely clean up PID memory variables
-                            if hasattr(self, '_turn_integral'):
-                                delattr(self, '_turn_integral')
-                            if hasattr(self, '_turn_last_error'):
-                                delattr(self, '_turn_last_error')
+                #         # Handle 180-degree wrap-around math to ensure shortest turning path
+                #         while heading_error > 180.0:
+                #             heading_error -= 360.0
+                #         while heading_error < -180.0:
+                #             heading_error += 360.0
 
-                            # Break the inner while loop to return to the main state machine
-                            state = ns_shared.MicroState.P4_SCAN
-                            break
+                #         # 3. Check for the Alignment Exit Condition
+                #         TURN_TOLERANCE_DEG = 2.5
+                #         if abs(heading_error) <= TURN_TOLERANCE_DEG:
+                #             # Active braking to arrest any remaining inertia
+                #             self._sdk.mecanum_stop()
+                #             logging.info(f"P4_TURN: Aligned with target {self.p4_target_heading} deg. Back to SCAN.")
 
-                        # 4. PID Math Engine (Outputs deg/s)
-                        KP_TURN = 2.5   # Proportional gain
-                        KI_TURN = 0.05  # Integral gain
-                        KD_TURN = 0.15  # Derivative gain
+                #             # Safely clean up PID memory variables
+                #             if hasattr(self, '_turn_integral'):
+                #                 delattr(self, '_turn_integral')
+                #             if hasattr(self, '_turn_last_error'):
+                #                 delattr(self, '_turn_last_error')
 
-                        # Initialize last error on the first run of this loop sequence
-                        if self._turn_last_error is None:
-                            self._turn_last_error = heading_error
+                #             # Break the inner while loop to return to the main state machine
+                #             state = ns_shared.MicroState.P4_SCAN
+                #             break
 
-                        # Accumulate integral over time (assuming 20ms execution steps)
-                        self._turn_integral += heading_error * 0.02
-                        self._turn_integral = max(-5.0, min(5.0, self._turn_integral)) # Cap windup
+                #         # 4. PID Math Engine (Outputs deg/s)
+                #         KP_TURN = 2.5   # Proportional gain
+                #         KI_TURN = 0.05  # Integral gain
+                #         KD_TURN = 0.15  # Derivative gain
 
-                        # Calculate derivative rate of change
-                        error_derivative = (heading_error - self._turn_last_error) / 0.02
-                        self._turn_last_error = heading_error
+                #         # Initialize last error on the first run of this loop sequence
+                #         if self._turn_last_error is None:
+                #             self._turn_last_error = heading_error
 
-                        # Combine everything to get the target rotation speed in deg/s
-                        rotation_speed_degs = (heading_error * KP_TURN) + (self._turn_integral * KI_TURN) + (error_derivative * KD_TURN)
+                #         # Accumulate integral over time (assuming 20ms execution steps)
+                #         self._turn_integral += heading_error * 0.02
+                #         self._turn_integral = max(-5.0, min(5.0, self._turn_integral)) # Cap windup
 
-                        # Enforce a minimum speed floor to prevent low-voltage stiction stalls near the target
-                        MIN_TURN_SPEED = 8.0  # deg/s
-                        if abs(rotation_speed_degs) < MIN_TURN_SPEED:
-                            rotation_speed_degs = MIN_TURN_SPEED if rotation_speed_degs > 0 else -MIN_TURN_SPEED
+                #         # Calculate derivative rate of change
+                #         error_derivative = (heading_error - self._turn_last_error) / 0.02
+                #         self._turn_last_error = heading_error
 
-                        # Enforce maximum rotation limit caps
-                        rotation_speed_degs = max(-MAX_ROTATION_SPEED, min(MAX_ROTATION_SPEED, rotation_speed_degs))
+                #         # Combine everything to get the target rotation speed in deg/s
+                #         rotation_speed_degs = (heading_error * KP_TURN) + (self._turn_integral * KI_TURN) + (error_derivative * KD_TURN)
 
-                        # 5. Hand over computed velocity to your function
-                        # Passes the calculated speed directly as degrees per second
-                        self.pivot_around_plough(rotation_speed_degs)
-                        time.sleep(0.02)
-                case ns_shared.MicroState.P4_TURN_AROUND:
-                    # this is for post-delivery, where we can turn around as compact as possible without worrying about plough contents. After this back to scan.
-                    pass
+                #         # Enforce a minimum speed floor to prevent low-voltage stiction stalls near the target
+                #         MIN_TURN_SPEED = 8.0  # deg/s
+                #         if abs(rotation_speed_degs) < MIN_TURN_SPEED:
+                #             rotation_speed_degs = MIN_TURN_SPEED if rotation_speed_degs > 0 else -MIN_TURN_SPEED
+
+                #         # Enforce maximum rotation limit caps
+                #         rotation_speed_degs = max(-MAX_ROTATION_SPEED, min(MAX_ROTATION_SPEED, rotation_speed_degs))
+
+                #         # 5. Hand over computed velocity to your function
+                #         # Passes the calculated speed directly as degrees per second
+                #         self.pivot_around_plough(rotation_speed_degs)
+                #         time.sleep(0.02)
+                case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH_CW:
+                    self.pivot_around_plough(180)
+                    time.sleep(2)
+                    self._sdk.mecanum_stop()
+                    state = ns_shared.MicroState.P4_SCAN
+                    continue
+                case ns_shared.MicroState.P4_TURN_AROUND_PLOUGH_ACW:
+                    self.pivot_around_plough(-180)
+                    time.sleep(2)
+                    self._sdk.mecanum_stop()
+                    state = ns_shared.MicroState.P4_SCAN
+                    continue
+
 
             time.sleep(0.005)
 
@@ -522,7 +568,7 @@ class RobotHardware:
             count += 1
 
             acceleration = self.get_imu_gyro_x()
-            logging.info(f"{velocity}")
+            # logging.info(f"{velocity}")
 
             # if count >= 1000:
             #     if abs(velocity) < abs(tuneable_value):
@@ -542,7 +588,8 @@ class RobotHardware:
             # self._sdk.mecanum_translate_speed_times(180 * value, 40, 50, 1)
             # self._sdk.mecanum_move_xyz(36, 0, 0)
             # sleep(5)
-
+            self._sdk.mecanum_stop()
+            time.sleep(0.5)
             self._sdk.mecanum_move_xyz((60 * value * -1), 0, 0)
             time.sleep(1)
             self._sdk.mecanum_stop()
@@ -648,6 +695,74 @@ class RobotHardware:
         self.mecanum_translate(0, 0, 0, MAX_SPEED, MAX_ROTATION_SPEED)
         self._sdk.mecanum_stop()
         logging.info("Maneuver complete.")
+
+    def turn_to_heading_blocking(self, target_heading, tolerance=3.0, timeout=4.0):
+        """
+        Blocks execution to cleanly snap the robot to an absolute target heading (in degrees)
+        using a Proportional (P) loop wrapped around the pivot_around_plough kinematics.
+        """
+        logging.info(f"STARTING BLOCKING P-TURN TO TARGET: {target_heading}°")
+        start_time = time.time()
+
+        # P-controller tuning coefficient (adjust this to make the turn faster/slower)
+        KP_TURN = 2.0
+
+        # Absolute hard caps to protect your kinematics bounds
+        MIN_DEG_S = 10.0   # Floor to beat low-voltage wheel stiction/friction stalls
+        MAX_DEG_S = 90.0   # Ceiling speed in degrees per second
+
+        while not self.queue_channels.kill_flag.is_set():
+            # 1. Thread safety kill check from user GUI/State Machine
+            if not self.shared_state.phase_state.is_running.is_set():
+                self._sdk.mecanum_stop()
+                logging.info("Turn aborted: Stop signal received.")
+                return False
+
+            # 2. Calculate heading error in degrees
+            current_heading = self.get_imu_heading()
+            heading_error = target_heading - current_heading
+
+            # 3. Shortest path wrap-around math (-180 to 180 degrees)
+            while heading_error > 180.0:
+                heading_error -= 360.0
+            while heading_error < -180.0:
+                heading_error += 360.0
+
+            # 4. Check Exit Conditions (Tolerance or Timeout)
+            if abs(heading_error) <= tolerance:
+                self._sdk.mecanum_stop()
+                logging.info(f"Target reached! Final Error: {heading_error:.2f}°")
+                return True
+
+            if (time.time() - start_time) >= timeout:
+                self._sdk.mecanum_stop()
+                logging.warning(f"Turn timed out before reaching target. Final Error: {heading_error:.2f}°")
+                return False
+
+            # 5. Proportional Math Calculation
+            # Output is directly targeted at degrees per second (deg_s)
+            target_deg_s = heading_error * KP_TURN
+
+            # 6. Apply speed bounds (Cap the maximums, enforce the floor friction)
+            sign = 1.0 if target_deg_s >= 0 else -1.0
+            magnitude = abs(target_deg_s)
+
+            if magnitude > MAX_DEG_S:
+                magnitude = MAX_DEG_S
+            elif magnitude < MIN_DEG_S:
+                magnitude = MIN_DEG_S
+
+            final_deg_s = magnitude * sign
+
+            # 7. Feed the calculated degrees/sec directly to your kinematics function
+            self.pivot_around_plough(final_deg_s)
+
+            # Match your loop sample timing frequency (50Hz)
+            time.sleep(0.02)
+
+        # Fallback stop if kill flag is tripped
+        self._sdk.mecanum_stop()
+        return False
 
     def pivot_around_plough(self, deg_s, MAX_SPEED=40, MAX_ROTATION_SPEED=120):
         """
@@ -902,7 +1017,7 @@ class RobotHardware:
         self,
         max_speed=10,
         strafe_speed=5,
-        threshold=70,
+        threshold=50,
         arm_down_distance=20,
         pick_distance=15,
     ):
@@ -951,21 +1066,29 @@ class RobotHardware:
                 self._sdk.mechanical_clamp_release()
                 # original_y = y
                 self._sdk.mecanum_stop()
+                time.sleep(0.5)
                 logger.info(f"{distance}")
-                self._sdk.mecanum_move_speed_times(0, 20, int((distance * 0.5 - 4)), 1)
+                try_d = int((distance * 0.4 - 4))
+                # if try_d <= 2 or try_d:
+                #     d = 10
+                #     logger.info("using hardcoded 10")
+                # else:
+                d = try_d
+                self._sdk.mecanum_move_speed_times(0, 15, d, 1)
                 time.sleep(1)
+                #self._sdk.mecanum_move_speed_times(0,5,2,1)
                 self._sdk.mecanum_stop()
                 time.sleep(0.5)
-                self._sdk.mechanical_joint_control(0, -30, -70, 750)
+                self._sdk.mechanical_joint_control(0, -40, -60, 750)
                 time.sleep(0.75)
-                self._sdk.mechanical_joint_control(0, -30, -65, 750)
+                self._sdk.mechanical_joint_control(0, -40, -55, 750)
                 time.sleep(0.75)
                 # self._sdk.mechanical_joint_control(0, -30, -60, 1000)
                 # time.sleep(1)
                 # self._sdk.mechanical_joint_control(0, -30, -65, 1000)
                 # time.sleep(1)
                 self._sdk.mechanical_clamp_close()
-                time.sleep(3)
+                time.sleep(0.5)
                 # self._sdk.mecanum_move_xyz(0, int(0.5 * max_speed), 0)
                 picked = True
                 self._sdk.screen_display_background(0)
@@ -980,12 +1103,12 @@ class RobotHardware:
             elif x_error > (0 + threshold):
                 logger.info("GO RIGHT")
                 # thatmeans it's to the right
-                self._sdk.mecanum_move_xyz(strafe_speed, int(max_speed), 0)
+                self._sdk.mecanum_move_xyz(strafe_speed, 0, 0)
 
             elif x_error < (0 - threshold):
                 logger.info("GO LEFT")
                 # that means it's to the left i guess
-                self._sdk.mecanum_move_xyz(-strafe_speed, int(max_speed), 0)
+                self._sdk.mecanum_move_xyz(-strafe_speed, 0, 0)
 
             else:
                 logger.info("GO STRAIGHT")
@@ -1085,7 +1208,7 @@ class RobotHardware:
 
             for _ in face_data:
                 logging.info(f"I found {_}")
-                if _[0].startswith("villain"):
+                if _[0].startswith("villain") or _[0] == "prefix2":
                     villain_data.append(_)
                     center_x_data.append(_[1])
                     width_data.append(_[4])
@@ -1093,7 +1216,7 @@ class RobotHardware:
                         f"Villain detected at ({_[1]},{_[2]}), {len(villain_data)}/{villain_scans}"
                     )
 
-                    break
+
             if not villain_data:
                 logging.warning("no villain detected bleh")
                 continue
@@ -1134,17 +1257,31 @@ class RobotHardware:
         )
 
         # 5. Fire your SDK joint controls
-        self._sdk.mechanical_joint_control(angle_to_turn, 90, 60, 1000)
+        self._sdk.mechanical_joint_control(angle_to_turn, 90, 90, 1000)
         time.sleep(1)
-        self._sdk.mechanical_joint_control(
-            int(angle_to_turn),
-            -5,
-            -10,
-            200,
-        )
-        time.sleep(0.1)
+        # self._sdk.mechanical_clamp_close()
+        # time.sleep(0.5)
+        #got.mechanical_joint_control(angle_to_turn,10,90,150)
+        self._sdk.mechanical_single_joint_control(2,30,150)
+        #time.sleep(0.01)
+            #intentional
+
+        self._sdk.mechanical_single_joint_control(3,-45,100)
         self._sdk.mechanical_clamp_release()
+
+
         time.sleep(1)
+        # self._sdk.mechanical_joint_control(
+        #     int(angle_to_turn),
+        #     -20,
+        #     90,
+        #     200,
+        # )
+        # time.sleep(0.15)
+        # self._sdk.mechanical_joint_control(angle_to_turn,-20,10,200)
+        # #time.sleep(0.1)
+        # self._sdk.mechanical_clamp_release()
+        # time.sleep(1)
 
     def register_face_from_file(self, name, target_jpeg_path):
         """

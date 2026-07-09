@@ -192,12 +192,14 @@ class RobotController:
         # time.sleep(1)
         # self.engbot._sdk.mecanum_stop()
         # return
+
         self.queue_channels.ball_detection_active_flag.set()
-        self.engbot.eng_ball_centralise_and_pick()
+        #self.engbot.eng_ball_centralise_and_pick()
         self.queue_channels.ball_detection_active_flag.clear()
         self.engbot._sdk.mechanical_joint_control(0, 90, 60, 1000)
         time.sleep(1)
-        self.engbot._sdk.mecanum_move_speed_times(0, 80, 40, 1)
+        # self.engbot._sdk.mecanum_move_speed_times(0, 80, 40, 1)
+        self.engbot._sdk.mechanical_clamp_close()
         self.engbot.eng_throw_ball()
 
         # temp
@@ -216,6 +218,7 @@ class RobotController:
             self.advance_phase()
 
     def phase4(self, MAX_SPEED=40, MAX_ROTATION_SPEED=40):
+        self.engbot._sdk.mecanum_stop()
         self.queue_channels.block_detection_active_flag.set()
         self.engbot.new_block_sorting()
         self.queue_channels.block_detection_active_flag.clear()
@@ -533,11 +536,14 @@ class RobotController:
 
     def opcontrol(self, joystick_control=True):
         """fall back option using mecanum_move_xyz"""
+        logging.info("test")
         if joystick_control:
             self.queue_channels.vibrate_flag.put((0.5, 0.0, 500))
         self.zoom = False
+        logging.info("shld be driving")
 
         while not self.queue_channels.kill_flag.is_set():
+            logging.info("shld be driving")
             # FIX 1: If the pipeline is stopped/paused, break out immediately without advancing
             if not self.shared_state.phase_state.is_running.is_set():
                 self.engbot._sdk.mecanum_stop()

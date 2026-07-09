@@ -55,7 +55,7 @@ class WebcamWindow(BaseWindow):
         with self.gui.shared_state.webcam_camera_frame_lock:
             frame = self.gui.shared_state.webcam_camera_frame
         if frame is None:
-            print("FRAME IS NONE")
+            #print("FRAME IS NONE")
             return
 
         dpg.set_value(self.texture_tag, frame.ravel())

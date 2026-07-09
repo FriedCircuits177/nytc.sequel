@@ -45,7 +45,7 @@ class PS4ControllerDriver:
 
         joystick_count = pygame.joystick.get_count()
         if joystick_count == 0:
-            logger.warning("No joysticks detected! Retrying...")
+            #logger.warning("No joysticks detected! Retrying...")
             return False
 
         try:
